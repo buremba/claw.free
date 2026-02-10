@@ -8,8 +8,9 @@ const clouds: {
   name: string
   icon: ComponentType<{ className?: string }>
   available: boolean
+  free?: boolean
 }[] = [
-  { id: "gcp", name: "Google Cloud", icon: GoogleCloudIcon, available: true },
+  { id: "gcp", name: "Google Cloud", icon: GoogleCloudIcon, available: true, free: true },
   { id: "hetzner", name: "Hetzner", icon: HetznerIcon, available: false },
   { id: "aws", name: "AWS", icon: AWSIcon, available: false },
   { id: "oracle", name: "Oracle", icon: OracleIcon, available: false },
@@ -46,6 +47,9 @@ export function CloudSelector({
             >
               <Icon className="h-4 w-4 shrink-0" />
               <span>{c.name}</span>
+              {c.free && (
+                <span className="text-xs font-semibold text-green-500">Free</span>
+              )}
               {selected && (
                 <svg className="h-3 w-3 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />

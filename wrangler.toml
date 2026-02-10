@@ -1,0 +1,6 @@
+name = "claw-free"
+compatibility_date = "2026-02-10"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "placeholder"
