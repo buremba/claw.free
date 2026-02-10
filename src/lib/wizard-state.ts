@@ -19,7 +19,7 @@ export function buildCloudShellUrl(state: WizardState): string {
   // Cloud Shell prompts the user to enter TELEGRAM_TOKEN and TELEGRAM_USER_ID.
   // GCP_REGION and LLM_PROVIDER are set directly since they're not sensitive.
   const params = new URLSearchParams({
-    cloudshell_git_repo: "https://github.com/buremba/claw-free-deploy",
+    cloudshell_git_repo: "https://github.com/buremba/claw.free",
     cloudshell_tutorial: "tutorial.md",
     cloudshell_env_vars: "TELEGRAM_TOKEN,TELEGRAM_USER_ID",
     "cloudshell_open_in_editor": "true",
