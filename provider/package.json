@@ -1,0 +1,11 @@
+{
+  "name": "claw-free-provider",
+  "version": "1.0.0",
+  "description": "Bootstrap LLM provider for claw.free — handles auth flow via Telegram",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}
