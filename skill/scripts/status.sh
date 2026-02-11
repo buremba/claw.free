@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+STATE_DIR="/var/lib/openclaw"
+NPM_PREFIX="${STATE_DIR}/npm-global"
+OPENCLAW_BIN="${NPM_PREFIX}/bin/openclaw"
+OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${STATE_DIR}/home/.openclaw/openclaw.json}"
+
 echo "=== claw.free Status ==="
 echo ""
 
-echo "── Docker Containers ──"
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "Docker not running"
+echo "── Services ──"
+for unit in openclaw-setup claw-free-provider openclaw-gateway openclaw-ai-tools; do
+  status="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  if [ -z "$status" ]; then
+    status="not-found"
+  fi
+  printf "  %-20s %s\n" "$unit" "$status"
+done
 echo ""
 
 echo "── Resource Usage ──"
@@ -27,17 +38,23 @@ curl -s http://localhost:3456/health 2>/dev/null | python3 -c "import sys,json; 
 echo ""
 
 echo "── OpenClaw Config ──"
-if [ -f /opt/openclaw/openclaw.json ]; then
+if [ -f "$OPENCLAW_CONFIG_PATH" ]; then
   python3 -c "
 import json
-with open('/opt/openclaw/openclaw.json') as f:
+with open('$OPENCLAW_CONFIG_PATH') as f:
     c = json.load(f)
-pm = c.get('models', {}).get('primaryModel', 'not set')
+pm = c.get('agents', {}).get('defaults', {}).get('model', {}).get('primary', 'not set')
 print(f'  Primary model: {pm}')
-alts = c.get('models', {}).get('alternativeModels', [])
+alts = c.get('agents', {}).get('defaults', {}).get('model', {}).get('fallbacks', [])
 if alts:
     print(f'  Alternative models: {\", \".join(alts)}')
 "
 else
   echo "  Config not found"
+fi
+
+if [ -x "$OPENCLAW_BIN" ]; then
+  echo ""
+  echo "── OpenClaw CLI ──"
+  echo "  Version: $($OPENCLAW_BIN --version 2>/dev/null || echo unknown)"
 fi

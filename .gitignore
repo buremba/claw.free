@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-server
 *.local
 
 # Nix
@@ -27,6 +28,12 @@ result
 *.sln
 *.sw?
 
-# Local runtime/dev secrets and Cloudflare temp state
-.dev.vars
+# Local runtime/dev secrets
+.env
+
+# Wrangler (legacy Cloudflare state)
 .wrangler/
+
+# process-compose runtime state
+.process-compose/
+.tmp/

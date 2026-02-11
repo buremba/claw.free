@@ -100,7 +100,7 @@ Use [nixos-generators](https://github.com/nix-community/nixos-generators) to pro
   ];
 
   # Firewall
-  networking.firewall.allowedTCPPorts = [ 22 18789 ];
+  networking.firewall.allowedTCPPorts = [ 22 ];
 
   # Auto-upgrade nix store garbage collection
   nix.gc = {
@@ -123,9 +123,9 @@ Use [nixos-generators](https://github.com/nix-community/nixos-generators) to pro
 # Build the image
 nix build .#gcp-image
 
-# Upload to GCP (owletto project)
+# Upload to GCP (owletto-484401 project)
 gcloud compute images create nixos-openclaw-v1 \
-  --project=owletto \
+  --project=owletto-484401 \
   --source-uri=gs://YOUR_BUCKET/nixos-image.raw.tar.gz \
   --family=nixos-openclaw
 ```
@@ -294,7 +294,7 @@ Instead of a bash startup script, the VM uses a NixOS activation module that rea
         TELEGRAM_TOKEN=$(cat "$TELEGRAM_TOKEN_FILE" 2>/dev/null || echo "")
 
         # Clone repos
-        ${pkgs.git}/bin/git clone https://github.com/buremba/openclaw.git /opt/openclaw/app || true
+        ${pkgs.git}/bin/git clone https://github.com/openclaw/openclaw.git /opt/openclaw/app || true
         ${pkgs.git}/bin/git clone https://github.com/buremba/claw.free.git /opt/openclaw/claw-free || true
 
         # Install provider deps
@@ -338,7 +338,7 @@ Change the VM creation to use the custom NixOS image instead of Debian:
 
 ```diff
 - sourceImage: "projects/debian-cloud/global/images/family/debian-12",
-+ sourceImage: "projects/owletto/global/images/family/nixos-openclaw",
++ sourceImage: "projects/owletto-484401/global/images/family/nixos-openclaw",
 ```
 
 Remove `startup-script-url` metadata. Instead, pass non-secret config directly as metadata keys (including `LLM_PROVIDER` and `BOT_NAME`). Secrets are managed either locally on the instance (default) or via encrypted GitHub files in optional GitHub mode.
@@ -687,7 +687,7 @@ When user asks to add/rotate a secret:
 
 ## Implementation Order
 
-1. **Image build pipeline** — Create `nixos-generators` flake, build GCP image, upload to `owletto` image family. Set up GitHub Actions to rebuild on push.
+1. **Image build pipeline** — Create `nixos-generators` flake, build GCP image, upload to `owletto-484401` image family. Set up GitHub Actions to rebuild on push.
 2. **NixOS modules** — Write `openclaw.nix` activation module and `ai-tools.nix` with base-installed Claude/Codex/Gemini CLIs. Test on a manual GCP VM.
 3. **Update deploy/start.ts** — Switch image reference from Debian to NixOS, remove startup-script-url, add `BOT_NAME` metadata and dynamic VM naming. Test full deploy flow.
 4. **Deploy status + health** — Update deploy polling to mark success only when app health endpoint is reachable.
@@ -701,7 +701,7 @@ When user asks to add/rotate a secret:
 
 - **Secrets handling**: In local mode, secrets are stored only on VM (not in platform storage). In optional GitHub mode, only encrypted `.age` files are committed.
 - **SSH hardening**: Disable password auth, root login. Use OS Login only (`services.google-oslogin.enable = true` handles this). Consider `fail2ban` but it adds memory overhead — may not be worth it on e2-micro.
-- **Firewall**: Currently only ports 22 and 18789 are open. Port 18789 (OpenClaw API) is open to `0.0.0.0/0` — consider whether this needs auth or IP allowlisting.
+- **Firewall**: Keep deployments private-by-default (SSH via OS Login / IAP only). Public OpenClaw API exposure should be opt-in with explicit auth.
 - **Auto security updates**: NixOS doesn't auto-update by default. Add `system.autoUpgrade` for security patches, but this requires rebuilds which the e2-micro can't do (see "Avoid building on the VM"). Solution: push updated closures from CI on a schedule.
 
 ### Secrets management
@@ -717,26 +717,27 @@ What is an `.age` file:
 - Only holders of the matching private key can decrypt it at runtime.
 
 GitHub mode flow:
-1. Agent encrypts secret to `secrets/<botName>/telegram-token.age`.
-2. Agent commits the encrypted file in the user's repo.
-3. VM fetches the repo revision and decrypts with `agenix`.
-4. Decrypted secret is written to root-only runtime file and injected into service config.
+1. VM creates a dedicated per-bot age keypair on first boot (private key stays on VM).
+2. VM sends recipient public key to backend using GCP instance identity attestation.
+3. Backend verifies bot/instance binding and returns a short-lived GitHub App installation token.
+4. Agent encrypts secret to `secrets/<botName>/telegram-token.age` and commits via GitHub token.
+5. VM fetches repo revision and decrypts with `agenix`.
+6. Decrypted secret is written to root-only runtime file and injected into service config.
 
 This keeps secrets scoped per bot while staying Nix-native with `agenix`.
-
-Current preference:
-- Start with SSH host key recipients for simplicity.
-- Known drawback: if host keys rotate or VM is replaced, secrets must be re-encrypted for the new recipient.
 
 Chosen defaults:
 - Secret rotation entrypoint: from the bot list UI.
 - Health readiness timeout: 5 minutes.
+- GitHub mode writes use direct commits by default (no PR requirement).
+- SSH remains enabled via OS Login as break-glass access.
+- Age key rotation policy for MVP: manual on VM replacement.
 
 ### Monitoring and health checks
 
 The deploy page currently polls `deploy/[id].ts` for VM creation status, but has no insight into whether the app actually started successfully.
 
-- **Startup health probe**: After VM reports RUNNING, poll `http://VM_IP:18789/health` to confirm OpenClaw is actually serving. Only show "Done!" when the health check passes.
+- **Startup health probe**: After VM reports RUNNING, rely on serial console output/systemd state checks to confirm startup in private deployments.
 - **Systemd watchdog**: Add `WatchdogSec=60` to the OpenClaw service so systemd restarts it if it becomes unresponsive.
 - **Simple uptime endpoint**: The landing page could show a green/red dot next to existing VMs by pinging their API endpoints.
 
@@ -793,7 +794,7 @@ nix build .#packages.x86_64-linux.qemu-image
 
 # Run it
 qemu-system-x86_64 -m 1024 -drive file=result/nixos.qcow2,format=qcow2 \
-  -net nic -net user,hostfwd=tcp::2222-:22,hostfwd=tcp::18789-:18789
+  -net nic -net user,hostfwd=tcp::2222-:22
 ```
 
 Or use `nixos-rebuild build-vm` for quick iteration:
@@ -845,10 +846,9 @@ nix.settings.trusted-public-keys = [
 - **VM created but app never starts**: The deploy polling endpoint should timeout after 5 minutes and report an error with a "View logs" link (SSH or serial console output).
 - **Session expiry during long deploys**: The session KV has a 600s TTL. If Compute API enablement + VM creation takes longer, the `[id].ts` polling endpoint can't read the access token. Increase TTL to 3600s for deploy sessions, or store the access token in the deploy record itself.
 
-### Open questions for the implementing agent
+### Remaining gaps
 
-1. `agenix` identity strategy: use SSH host key recipients (simpler) or dedicated age keypair per bot (better portability).
-2. Bootstrap path for GitHub mode: how does VM publish recipient public key so first encrypted secret can be committed without exposing private key.
+No critical architecture gaps remain for MVP. Future enhancements can add scheduled key rotation and optional SSH disable hardening.
 
 ---
 

@@ -26,8 +26,10 @@ interface SessionData {
 
 interface ExistingVm {
   projectId: string
+  name: string
   zone: string
   ip: string
+  machineType: string
   status: string
 }
 
@@ -65,6 +67,7 @@ function Home() {
     (search.cloud as CloudProvider) ?? null,
   )
   const [region, setRegion] = useState<Region>(guessRegion())
+  const [botName, setBotName] = useState("my-openclaw-bot")
   const [telegramToken, setTelegramToken] = useState("")
 
   // Session state — determined by cookie, not URL
@@ -103,6 +106,8 @@ function Home() {
       })
       .catch(() => {})
       .finally(() => setSessionLoading(false))
+    // This effect intentionally runs once to hydrate from cookie session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Fetch existing VMs when logged in
@@ -130,6 +135,7 @@ function Home() {
         setDeployStatus(data)
         if (data.status === "done" || data.status === "error") {
           clearInterval(interval)
+          setDeploying(false)
         }
       } catch {
         // Retry on next interval
@@ -140,7 +146,7 @@ function Home() {
   }, [deploymentId])
 
   const handleDeploy = useCallback(async () => {
-    if (!selectedProject || !telegramToken || !region) return
+    if (!selectedProject || !telegramToken || !region || !botName.trim()) return
     setDeploying(true)
     setDeployError(null)
 
@@ -152,6 +158,8 @@ function Home() {
           projectId: selectedProject,
           telegramToken,
           region,
+          provider: llmProvider,
+          botName,
         }),
       })
 
@@ -171,7 +179,7 @@ function Home() {
       setDeployError("Failed to start deployment")
       setDeploying(false)
     }
-  }, [selectedProject, telegramToken, region])
+  }, [selectedProject, telegramToken, region, llmProvider, botName])
 
   const handleCreateProject = useCallback(async () => {
     if (!newProjectName.trim()) return
@@ -240,6 +248,7 @@ function Home() {
   const canDeploy =
     isLoggedIn &&
     selectedProject !== "" &&
+    botName.trim() !== "" &&
     telegramToken.trim() !== "" &&
     !deploying &&
     !deploymentId
@@ -303,15 +312,22 @@ function Home() {
               <div className="space-y-3">
                 {existingVms.map((vm) => (
                   <div
-                    key={`${vm.projectId}-${vm.zone}`}
+                    key={`${vm.projectId}-${vm.zone}-${vm.name}`}
                     className="flex items-center justify-between rounded-lg border bg-muted/30 p-4 text-sm"
                   >
                     <div className="space-y-0.5">
                       <p className="font-medium text-foreground">
-                        {vm.projectId}
+                        {vm.name}
                       </p>
                       <p className="text-muted-foreground">
-                        {vm.zone} &middot;{" "}
+                        {vm.projectId} &middot; {vm.zone}
+                      </p>
+                      <p className="text-muted-foreground">
+                        Machine type:{" "}
+                        <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+                          {vm.machineType || "unknown"}
+                        </code>{" "}
+                        &middot;{" "}
                         {vm.ip ? (
                           <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
                             {vm.ip}
@@ -433,6 +449,20 @@ function Home() {
         {/* Telegram token — only post-login */}
         {isLoggedIn && channel === "telegram" && (
           <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="bot-name">Bot Name</Label>
+              <Input
+                id="bot-name"
+                type="text"
+                placeholder="my-openclaw-bot"
+                value={botName}
+                onChange={(e) => setBotName(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Used as your VM name (a unique suffix is added automatically).
+              </p>
+            </div>
+
             <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-1.5">
               <p className="font-medium text-foreground">
                 Create your Telegram bot:
@@ -500,29 +530,34 @@ function Home() {
                   </div>
                 )}
 
-                {deployStatus.status === "done" && deployStatus.ip && (
+                {deployStatus.status === "done" && (
                   <div className="space-y-4">
                     <div className="rounded-lg border bg-muted/30 p-4 text-sm space-y-2">
                       <p className="font-medium text-foreground">
                         Deployment complete!
                       </p>
                       <p className="text-muted-foreground">
-                        Your VM is running at{" "}
-                        <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-                          {deployStatus.ip}
-                        </code>
+                        Your VM is running in your GCP project.
                       </p>
                       <p className="text-muted-foreground">
-                        OpenClaw API:{" "}
-                        <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-                          http://{deployStatus.ip}:18789
-                        </code>
+                        Network mode: private by default (no public gateway URL).
                       </p>
+                      {deployStatus.ip && (
+                        <p className="text-muted-foreground">
+                          Existing public IP detected:{" "}
+                          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+                            {deployStatus.ip}
+                          </code>
+                        </p>
+                      )}
                     </div>
 
                     <div className="rounded-lg border bg-muted/30 p-4 text-sm space-y-1.5 text-muted-foreground">
                       <p className="font-medium text-foreground">
                         Next steps:
+                      </p>
+                      <p>
+                        Startup can take 1-2 minutes after VM provisioning.
                       </p>
                       <p>1. Open Telegram and message your bot</p>
                       <p>
@@ -532,6 +567,25 @@ function Home() {
                         3. Follow the auth instructions your bot sends you
                       </p>
                       <p>4. Start chatting!</p>
+                    </div>
+
+                    <div className="rounded-lg border bg-muted/30 p-4 text-sm space-y-3 text-muted-foreground">
+                      <p className="font-medium text-foreground">
+                        Access options
+                      </p>
+                      <p>
+                        Default (recommended): use your bot from Telegram only.
+                        No public gateway URL needed.
+                      </p>
+                      <p>
+                        Private admin access: enable Tailscale or GCP IAP to
+                        reach this VM securely without exposing it publicly.
+                      </p>
+                      <p>
+                        Public URL (advanced): use Cloudflare Tunnel or
+                        Tailscale Funnel if you need internet access. Keep this
+                        optional and protect access with auth.
+                      </p>
                     </div>
                   </div>
                 )}
@@ -573,7 +627,7 @@ function Home() {
         <div className="space-y-5">
           <FaqItem title="Is this really free?">
             {cloud === "gcp"
-              ? "Google Cloud's always-free tier includes an e2-micro VM, 30GB disk, and a public IP — all at $0/month."
+              ? "Google Cloud's always-free tier includes an e2-micro VM and 30GB disk at $0/month."
               : "Cloud providers like Google Cloud offer always-free tiers with enough compute to run OpenClaw at no cost."}{" "}
             {isFreeProvider
               ? "Kimi K2.5 is available for free through NVIDIA's API, so there are no AI costs either."

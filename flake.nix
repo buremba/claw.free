@@ -17,6 +17,7 @@
             nodejs_22
             nodePackages.npm
             google-cloud-sdk
+            process-compose
           ];
 
           shellHook = ''

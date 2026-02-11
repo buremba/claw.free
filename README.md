@@ -7,17 +7,18 @@ Free OpenClaw installer. Deploy your own AI assistant to the cloud — at zero c
 ## How it works
 
 1. Pick your AI provider (Claude or ChatGPT), messaging channel, and cloud region
-2. Click "Login with Google" — opens Google Cloud Shell
-3. Cloud Shell deploys OpenClaw to a free VM in your own GCP account
+2. Click "Login with Google" and approve access to your GCP account
+3. claw.free provisions OpenClaw to a free VM in your own GCP account via Google APIs
 4. Message your bot on Telegram — it walks you through authenticating with your AI provider
 5. Done. Chat with your AI assistant 24/7
 
 ## Architecture
 
 ```
-claw.free (static landing page)
-  → generates "Open in Cloud Shell" URL
-  → GCP Cloud Shell deploys to user's e2-micro VM
+claw.free (web app + API)
+  → Google OAuth (user grants compute/cloud-platform scopes)
+  → Backend calls GCP APIs to create a private-by-default VM in user's project
+      → e2-micro VM (no external IP by default)
       → OpenClaw + Docker
       → claw-free-provider (bootstrap auth flow)
       → Claude Code CLI + Codex CLI
@@ -30,7 +31,7 @@ claw.free (static landing page)
 ## Stack
 
 - **Landing page**: TanStack Router, React, Tailwind CSS, shadcn/ui
-- **Deploy**: GCP Cloud Shell tutorial + bash scripts
+- **Deploy**: Google OAuth + GCP REST APIs + VM startup scripts
 - **VM provisioning**: Nix + Docker on Debian 12
 - **Bootstrap provider**: Node.js OpenAI-compatible server for auth flow
 - **Hosting**: Cloudflare Pages
@@ -39,9 +40,34 @@ claw.free (static landing page)
 
 ```bash
 nix develop        # or: npm install
-npm run dev        # http://localhost:5365
+npm run dev        # process-compose (API: http://localhost:8788, Vite: http://localhost:5365)
 npm run build      # production build in dist/
 ```
+
+Environment variables used by the API are listed in `.env.example`.
+For local development:
+
+```bash
+cp .env.example .env
+```
+
+Minimum required values for Google login flow:
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `DATABASE_URL` (needed for OAuth callback persistence)
+- `COOKIE_SECRET` (required in production; optional in local dev)
+
+`npm run dev` now uses `process-compose` to run both services with hot reload:
+- `landing`: Vite dev server (frontend HMR)
+- `api`: `tsx watch server/index.ts` (automatic API reload on file changes)
+- project-local process manager socket: `.tmp/process-compose.sock` (avoids cross-repo collisions)
+
+Useful process manager commands:
+- `npm run dev:status` to list managed processes
+- `npm run dev:attach` to attach to the running TUI
+- `npm run dev:down` to stop the running process-compose project
+
+If you are not using `nix develop`, install `process-compose` separately (for example `brew install process-compose` on macOS), or use `npm run dev:legacy`.
 
 ## Project structure
 
@@ -49,11 +75,10 @@ npm run build      # production build in dist/
 src/                    Landing page (React + TanStack Router)
   routes/               File-based routes
   components/           UI components (selectors, icons, logo)
-  lib/                  Wizard state, Cloud Shell URL builder
+  lib/                  Wizard state, auth URL builder
+server/                 API routes (Google auth + GCP VM provisioning)
 provider/               claw-free-provider (bootstrap LLM server)
 skill/                  claw.free management skill for OpenClaw
-deploy.sh               GCP Cloud Shell deploy script
 startup-script.sh       VM startup script (Nix + Docker + OpenClaw)
-tutorial.md             Cloud Shell guided tutorial
 flake.nix               Nix flake for dev environment + VM packages
 ```

@@ -1,4 +1,4 @@
-name: Deploy to Cloudflare Pages
+name: CI
 
 on:
   push:
@@ -7,11 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  deploy:
+  ci:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      deployments: write
     steps:
       - uses: actions/checkout@v4
 
@@ -21,10 +18,5 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - run: npm run test
       - run: npm run build
-
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=claw-free

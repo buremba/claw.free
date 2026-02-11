@@ -2,20 +2,71 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 
-const PORT = 3456;
+const PORT = parseInt(process.env.PORT, 10) || 3456;
 const AUTH_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const OPENCLAW_CONFIG_PATH =
-  process.env.OPENCLAW_CONFIG_PATH || "/opt/openclaw/openclaw.json";
+  process.env.OPENCLAW_CONFIG_PATH || "/var/lib/openclaw/home/.openclaw/openclaw.json";
+const CLAW_FREE_MODEL = "claw-free/setup";
+const SUPPORTED_PROVIDERS = ["claude", "openai", "kimi"];
+const PROVIDER_CONFIG = {
+  claude: {
+    displayName: "Claude (Anthropic)",
+    model: "anthropic/claude-sonnet-4-20250514",
+    authKey: "anthropic",
+    apiKeyPrefix: "sk-ant-",
+    apiKeyHelp: [
+      "1. Go to https://console.anthropic.com/settings/keys",
+      "2. Create a new key",
+      "3. Paste it here",
+    ],
+  },
+  openai: {
+    displayName: "ChatGPT (OpenAI)",
+    model: "openai/gpt-4o",
+    authKey: "openai",
+    apiKeyPrefix: "sk-",
+    apiKeyHelp: [
+      "1. Go to https://platform.openai.com/api-keys",
+      "2. Create a new key",
+      "3. Paste it here",
+    ],
+  },
+  kimi: {
+    displayName: "Kimi Coding",
+    model: "kimi-coding/k2p5",
+    authKey: "kimi-coding",
+    apiKeyPrefix: "sk-",
+    apiKeyHelp: [
+      "1. Go to https://www.kimi.com/code/en",
+      "2. Create a Kimi Coding API key",
+      "3. Paste it here",
+    ],
+  },
+};
+const CLAW_FREE_PROVIDER_CONFIG = {
+  baseUrl: "http://localhost:3456/v1",
+  apiKey: "local",
+  api: "openai-completions",
+  models: [
+    {
+      id: "setup",
+      name: "claw.free Setup",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    },
+  ],
+};
 
 // ── State ──────────────────────────────────────────────────────────
 const state = {
-  stage: "welcome", // welcome | auth_started | waiting_for_code | add_another | done
-  selectedProvider: process.env.LLM_PROVIDER || "claude", // claude | openai
+  stage: "welcome", // welcome | waiting_for_code | waiting_for_device_auth | auth_complete | api_key_fallback | add_another | done
+  selectedProvider: normalizeProvider(process.env.LLM_PROVIDER || "claude"),
   childProcess: null,
   authTimer: null,
   configuredProviders: [],
-  capturedUrl: null,
-  capturedCode: null,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -40,20 +91,74 @@ async function writeOpenClawConfig(config) {
 }
 
 function providerDisplayName(provider) {
-  return provider === "claude" ? "Claude (Anthropic)" : "ChatGPT (OpenAI)";
+  return PROVIDER_CONFIG[provider]?.displayName ?? PROVIDER_CONFIG.claude.displayName;
 }
 
-function otherProvider(provider) {
-  return provider === "claude" ? "openai" : "claude";
+function normalizeProvider(provider) {
+  return SUPPORTED_PROVIDERS.includes(provider) ? provider : "claude";
 }
 
 function modelId(provider) {
-  if (provider === "claude") return "anthropic/claude-sonnet-4-20250514";
-  return "openai/gpt-4o";
+  return PROVIDER_CONFIG[provider]?.model ?? PROVIDER_CONFIG.claude.model;
 }
 
 function providerKey(provider) {
-  return provider === "claude" ? "anthropic" : "openai";
+  return PROVIDER_CONFIG[provider]?.authKey ?? PROVIDER_CONFIG.claude.authKey;
+}
+
+function apiKeyPrefix(provider) {
+  return PROVIDER_CONFIG[provider]?.apiKeyPrefix ?? "sk-";
+}
+
+function getRemainingProviders() {
+  return SUPPORTED_PROVIDERS.filter(
+    (provider) => !state.configuredProviders.includes(provider),
+  );
+}
+
+// ── State sync from config file ────────────────────────────────────
+async function syncStateFromConfig() {
+  try {
+    const config = await readOpenClawConfig();
+    const providers = config?.models?.providers ?? {};
+
+    // Derive configuredProviders from what's already in the config
+    const configured = [];
+    for (const provider of SUPPORTED_PROVIDERS) {
+      const key = providerKey(provider);
+      if (providers[key]) {
+        configured.push(provider);
+      }
+    }
+    state.configuredProviders = configured;
+
+    // If the claw-free bootstrap provider has been removed, setup is done
+    if (!providers["claw-free"]) {
+      state.stage = "done";
+    }
+  } catch {
+    // Config file doesn't exist or is unreadable — fresh start, keep defaults
+  }
+}
+
+// ── Stage marker encoding/parsing ──────────────────────────────────
+function stageMarker(stage, provider) {
+  return `\n\n<!---setup:${stage}:${provider}-->`;
+}
+
+function parseStageMarker(messages) {
+  // Find the last assistant message and extract the marker
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "assistant" && typeof msg.content === "string") {
+      const match = msg.content.match(/<!---setup:([^:]+):(\w+)-->/);
+      if (match) {
+        return { stage: match[1], provider: match[2] };
+      }
+      break; // only check the last assistant message
+    }
+  }
+  return null;
 }
 
 // ── Auth process spawning ──────────────────────────────────────────
@@ -247,20 +352,92 @@ async function restartGateway() {
   });
 }
 
+function ensureConfigShape(config) {
+  if (!config.gateway || typeof config.gateway !== "object") config.gateway = {};
+  if (!config.agents || typeof config.agents !== "object") config.agents = {};
+  if (!config.agents.defaults || typeof config.agents.defaults !== "object") {
+    config.agents.defaults = {};
+  }
+  if (
+    !config.agents.defaults.model ||
+    typeof config.agents.defaults.model !== "object"
+  ) {
+    config.agents.defaults.model = {};
+  }
+  if (!config.models || typeof config.models !== "object") config.models = {};
+  if (!config.models.providers || typeof config.models.providers !== "object") {
+    config.models.providers = {};
+  }
+  if (!config.models.mode) {
+    config.models.mode = "merge";
+  }
+
+  // Keep gateway bootable in strict mode.
+  if (!config.gateway.mode) {
+    config.gateway.mode = "local";
+  }
+  if (!config.agents.defaults.model.primary) {
+    config.agents.defaults.model.primary = CLAW_FREE_MODEL;
+  }
+  if (!config.models.providers["claw-free"]) {
+    config.models.providers["claw-free"] = JSON.parse(
+      JSON.stringify(CLAW_FREE_PROVIDER_CONFIG),
+    );
+  }
+}
+
+function migrateLegacyModelKeys(config) {
+  const legacyPrimary = config?.models?.primaryModel;
+  if (
+    typeof legacyPrimary === "string" &&
+    !config?.agents?.defaults?.model?.primary
+  ) {
+    ensureConfigShape(config);
+    config.agents.defaults.model.primary = legacyPrimary;
+  }
+
+  const legacyAlternatives = config?.models?.alternativeModels;
+  if (
+    Array.isArray(legacyAlternatives) &&
+    legacyAlternatives.length > 0 &&
+    !Array.isArray(config?.agents?.defaults?.model?.fallbacks)
+  ) {
+    ensureConfigShape(config);
+    config.agents.defaults.model.fallbacks = legacyAlternatives.slice();
+  }
+
+  if (config?.models && typeof config.models === "object") {
+    delete config.models.primaryModel;
+    delete config.models.alternativeModels;
+  }
+}
+
+function addFallbackModel(config, model) {
+  ensureConfigShape(config);
+  const primary = config.agents.defaults.model.primary;
+  const current = Array.isArray(config.agents.defaults.model.fallbacks)
+    ? config.agents.defaults.model.fallbacks
+    : [];
+
+  const deduped = current.filter(
+    (candidate) => typeof candidate === "string" && candidate !== model && candidate !== primary,
+  );
+  if (model !== primary && !deduped.includes(model)) {
+    deduped.push(model);
+  }
+  config.agents.defaults.model.fallbacks = deduped;
+}
+
 async function updateConfigForProvider(provider, isFirst) {
   const config = await readOpenClawConfig();
+  migrateLegacyModelKeys(config);
+  ensureConfigShape(config);
 
   const model = modelId(provider);
-
   if (isFirst) {
-    config.models.primaryModel = model;
+    config.agents.defaults.model.primary = model;
   } else {
-    if (!config.models.alternativeModels) {
-      config.models.alternativeModels = [];
-    }
-    if (!config.models.alternativeModels.includes(model)) {
-      config.models.alternativeModels.push(model);
-    }
+    addFallbackModel(config, model);
   }
 
   await writeOpenClawConfig(config);
@@ -268,10 +445,18 @@ async function updateConfigForProvider(provider, isFirst) {
 
 async function finalizeConfig() {
   const config = await readOpenClawConfig();
+  migrateLegacyModelKeys(config);
+  ensureConfigShape(config);
 
-  // Remove claw-free provider
   if (config.models?.providers?.["claw-free"]) {
     delete config.models.providers["claw-free"];
+  }
+
+  // Remove bootstrap fallback model if present.
+  if (Array.isArray(config.agents.defaults.model.fallbacks)) {
+    config.agents.defaults.model.fallbacks = config.agents.defaults.model.fallbacks.filter(
+      (model) => model !== CLAW_FREE_MODEL,
+    );
   }
 
   await writeOpenClawConfig(config);
@@ -287,7 +472,6 @@ async function handleWelcome() {
     if (provider === "claude") {
       const result = await spawnClaudeAuth();
       state.childProcess = result.process;
-      state.capturedUrl = result.url;
       state.stage = "waiting_for_code";
 
       // Set timeout for entire auth
@@ -301,18 +485,20 @@ async function handleWelcome() {
 Click this link to authenticate:
 ${result.url}
 
-After you log in, you'll get a code. Paste it here.`;
-    } else {
-      // OpenAI / Codex
+After you log in, you'll get a code. Paste it here.${stageMarker("waiting_for_code", provider)}`;
+    }
+
+    if (provider === "openai") {
       const result = await spawnCodexAuth();
       state.childProcess = result.process;
-      state.capturedCode = result.code;
       state.stage = "waiting_for_device_auth";
 
       // Codex polls automatically — wait in background
       waitForCodexAuth(result.process)
         .then(async () => {
-          state.configuredProviders.push("openai");
+          if (!state.configuredProviders.includes("openai")) {
+            state.configuredProviders.push("openai");
+          }
           await updateConfigForProvider("openai", state.configuredProviders.length === 1);
           state.childProcess = null;
           state.stage = "auth_complete";
@@ -332,36 +518,49 @@ After you log in, you'll get a code. Paste it here.`;
 Go to: ${result.url}
 Enter this code: **${result.code}**
 
-I'll detect when you're done automatically. Just send any message after you've authorized.`;
+I'll detect when you're done automatically. Just send any message after you've authorized.${stageMarker("waiting_for_device_auth", provider)}`;
     }
+
+    state.stage = "api_key_fallback";
+    return `Welcome to claw.free! Let's set up ${displayName}.
+
+${getApiKeyFallbackMessage(provider, false)}${stageMarker("api_key_fallback", provider)}`;
   } catch (err) {
     // Auth process failed to start — fall back to API key
     state.stage = "api_key_fallback";
-    return getApiKeyFallbackMessage(provider);
+    return `${getApiKeyFallbackMessage(provider)}${stageMarker("api_key_fallback", provider)}`;
   }
 }
 
-function getApiKeyFallbackMessage(provider) {
-  if (provider === "claude") {
-    return `I wasn't able to start the automatic login flow. No worries — you can paste an API key instead.
-
-1. Go to https://console.anthropic.com/settings/keys
-2. Create a new key
-3. Paste it here`;
-  }
-  return `I wasn't able to start the automatic login flow. No worries — you can paste an API key instead.
-
-1. Go to https://platform.openai.com/api-keys
-2. Create a new key
-3. Paste it here`;
+function getApiKeyFallbackMessage(provider, includePreface = true) {
+  const config = PROVIDER_CONFIG[provider] ?? PROVIDER_CONFIG.claude;
+  const preface = includePreface
+    ? "I wasn't able to start the automatic login flow. No worries — you can paste an API key instead.\n\n"
+    : "";
+  return `${preface}${config.apiKeyHelp.join("\n")}`;
 }
 
 async function handleWaitingForCode(userMessage) {
   const code = userMessage.trim();
 
   if (!state.childProcess) {
-    state.stage = "api_key_fallback";
-    return getApiKeyFallbackMessage(state.selectedProvider);
+    // Instance restarted — re-spawn auth process
+    try {
+      const result = await spawnClaudeAuth();
+      state.childProcess = result.process;
+      state.authTimer = setTimeout(() => {
+        killAuthProcess();
+        state.stage = "api_key_fallback";
+      }, AUTH_TIMEOUT_MS);
+
+      return `Your previous session expired. Here's a new link:
+${result.url}
+
+After you log in, paste the code here.${stageMarker("waiting_for_code", state.selectedProvider)}`;
+    } catch (err) {
+      state.stage = "api_key_fallback";
+      return `${getApiKeyFallbackMessage(state.selectedProvider)}${stageMarker("api_key_fallback", state.selectedProvider)}`;
+    }
   }
 
   try {
@@ -376,7 +575,9 @@ async function handleWaitingForCode(userMessage) {
       await pasteApiKey("claude", token);
     }
 
-    state.configuredProviders.push("claude");
+    if (!state.configuredProviders.includes("claude")) {
+      state.configuredProviders.push("claude");
+    }
     await updateConfigForProvider("claude", state.configuredProviders.length === 1);
 
     return promptAddAnother("claude");
@@ -385,7 +586,7 @@ async function handleWaitingForCode(userMessage) {
     state.stage = "api_key_fallback";
     return `That didn't work (${err.message}). Let's try the API key method instead.
 
-${getApiKeyFallbackMessage(state.selectedProvider)}`;
+${getApiKeyFallbackMessage(state.selectedProvider)}${stageMarker("api_key_fallback", state.selectedProvider)}`;
   }
 }
 
@@ -396,11 +597,48 @@ async function handleWaitingForDeviceAuth(userMessage) {
   }
 
   if (state.stage === "api_key_fallback") {
-    return getApiKeyFallbackMessage("openai");
+    return `${getApiKeyFallbackMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
+  }
+
+  if (!state.childProcess) {
+    // Instance restarted — re-spawn device auth
+    try {
+      const result = await spawnCodexAuth();
+      state.childProcess = result.process;
+
+      waitForCodexAuth(result.process)
+        .then(async () => {
+          if (!state.configuredProviders.includes("openai")) {
+            state.configuredProviders.push("openai");
+          }
+          await updateConfigForProvider("openai", state.configuredProviders.length === 1);
+          state.childProcess = null;
+          state.stage = "auth_complete";
+        })
+        .catch(() => {
+          state.stage = "api_key_fallback";
+          state.childProcess = null;
+        });
+
+      state.authTimer = setTimeout(() => {
+        killAuthProcess();
+        state.stage = "api_key_fallback";
+      }, AUTH_TIMEOUT_MS);
+
+      return `Your previous session expired. Here's a new code:
+
+Go to: ${result.url}
+Enter this code: **${result.code}**
+
+Send another message after you've authorized.${stageMarker("waiting_for_device_auth", "openai")}`;
+    } catch (err) {
+      state.stage = "api_key_fallback";
+      return `${getApiKeyFallbackMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
+    }
   }
 
   // Still waiting
-  return "Still waiting for you to authorize. Go to the link above and enter the code. Send another message when you're done.";
+  return `Still waiting for you to authorize. Go to the link above and enter the code. Send another message when you're done.${stageMarker("waiting_for_device_auth", state.selectedProvider)}`;
 }
 
 async function handleApiKeyFallback(userMessage) {
@@ -408,52 +646,84 @@ async function handleApiKeyFallback(userMessage) {
   const provider = state.selectedProvider;
 
   // Basic validation
-  if (provider === "claude" && !apiKey.startsWith("sk-ant-")) {
-    return "That doesn't look like a Claude API key (should start with sk-ant-). Try again:";
-  }
-  if (provider === "openai" && !apiKey.startsWith("sk-")) {
-    return "That doesn't look like an OpenAI API key (should start with sk-). Try again:";
+  const expectedPrefix = apiKeyPrefix(provider);
+  if (!apiKey.startsWith(expectedPrefix)) {
+    return `That doesn't look like a ${providerDisplayName(provider)} API key (should start with ${expectedPrefix}). Try again:${stageMarker("api_key_fallback", provider)}`;
   }
 
   try {
     await pasteApiKey(provider, apiKey);
-    state.configuredProviders.push(provider);
+    if (!state.configuredProviders.includes(provider)) {
+      state.configuredProviders.push(provider);
+    }
     await updateConfigForProvider(provider, state.configuredProviders.length === 1);
 
     return promptAddAnother(provider);
   } catch (err) {
-    return `Failed to save the API key: ${err.message}. Try pasting it again:`;
+    return `Failed to save the API key: ${err.message}. Try pasting it again:${stageMarker("api_key_fallback", provider)}`;
   }
 }
 
 function promptAddAnother(justConfigured) {
-  const other = otherProvider(justConfigured);
-  const otherName = providerDisplayName(other);
   const justName = providerDisplayName(justConfigured);
+  const remaining = getRemainingProviders();
+
+  if (remaining.length === 0) {
+    return finishSetup();
+  }
 
   state.stage = "add_another";
+  const options = remaining
+    .map((provider, idx) => `${idx + 1}. Add ${providerDisplayName(provider)}`)
+    .join("\n");
+  const finishOption = `${remaining.length + 1}. No, start chatting!`;
 
   return `${justName} is set up as your ${state.configuredProviders.length === 1 ? "primary" : "alternative"} model!
 
-Would you like to also add ${otherName} as an alternative?
-1. Yes, add ${otherName}
-2. No, start chatting!
+Would you like to add another provider as an alternative?
+${options}
+${finishOption}
 
-Reply with 1 or 2.`;
+Reply with a number.${stageMarker("add_another", justConfigured)}`;
 }
 
 async function handleAddAnother(userMessage) {
-  const choice = userMessage.trim();
+  const choice = userMessage.trim().toLowerCase();
+  const remaining = getRemainingProviders();
+  const finishChoice = String(remaining.length + 1);
 
-  if (choice === "1" || choice.toLowerCase().startsWith("yes")) {
-    // Switch to other provider and start auth
-    state.selectedProvider = otherProvider(state.selectedProvider);
+  if (
+    choice === finishChoice ||
+    choice === "0" ||
+    choice.startsWith("no") ||
+    choice === "skip" ||
+    choice === "done"
+  ) {
+    return finishSetup();
+  }
+
+  if (/^\d+$/.test(choice)) {
+    const selected = remaining[Number(choice) - 1];
+    if (!selected) {
+      return `Please reply with a number between 1 and ${remaining.length + 1}.${stageMarker("add_another", state.selectedProvider)}`;
+    }
+
+    state.selectedProvider = selected;
     state.stage = "welcome";
     return handleWelcome();
   }
 
-  // User chose to start chatting
-  return finishSetup();
+  const selectedByName = remaining.find((provider) => {
+    const display = providerDisplayName(provider).toLowerCase();
+    return choice.includes(provider) || choice.includes(display);
+  });
+  if (selectedByName) {
+    state.selectedProvider = selectedByName;
+    state.stage = "welcome";
+    return handleWelcome();
+  }
+
+  return `Please reply with a number between 1 and ${remaining.length + 1}.${stageMarker("add_another", state.selectedProvider)}`;
 }
 
 async function finishSetup() {
@@ -461,18 +731,33 @@ async function finishSetup() {
   try {
     await finalizeConfig();
   } catch (err) {
-    return `Setup is done but I had trouble restarting: ${err.message}. Try messaging again in a few seconds.`;
+    return `Setup is done but I had trouble restarting: ${err.message}. Try messaging again in a few seconds.${stageMarker("done", state.selectedProvider)}`;
   }
 
-  return "All set! Your bot is restarting now with the real AI model. Send any message in a few seconds to start chatting!";
+  return `All set! Your bot is restarting now with the real AI model. Send any message in a few seconds to start chatting!${stageMarker("done", state.selectedProvider)}`;
 }
 
 async function handleDone() {
-  return "Setup is already complete. Your bot should be using the real AI model now. If it's not responding, wait a few seconds and try again.";
+  return `Setup is already complete. Your bot should be using the real AI model now. If it's not responding, wait a few seconds and try again.${stageMarker("done", state.selectedProvider)}`;
 }
 
 // ── Message router ─────────────────────────────────────────────────
-async function handleMessage(userMessage) {
+async function handleMessage(userMessage, messages) {
+  // Reconstruct state from config file (survives restarts)
+  await syncStateFromConfig();
+
+  // If setup already complete (detected from config), short-circuit
+  if (state.stage === "done") {
+    return handleDone();
+  }
+
+  // Reconstruct stage and selectedProvider from last assistant message marker
+  const marker = parseStageMarker(messages);
+  if (marker) {
+    state.stage = marker.stage;
+    state.selectedProvider = normalizeProvider(marker.provider);
+  }
+
   // Check if device auth completed in background (codex)
   if (state.stage === "waiting_for_device_auth") {
     // Re-check — stage may have been updated by the background promise
@@ -480,7 +765,7 @@ async function handleMessage(userMessage) {
       return promptAddAnother("openai");
     }
     if (state.stage === "api_key_fallback") {
-      return getApiKeyFallbackMessage("openai");
+      return `${getApiKeyFallbackMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
     }
   }
 
@@ -583,7 +868,7 @@ const server = createServer(async (req, res) => {
       const lastUserMsg =
         messages.filter((m) => m.role === "user").pop()?.content || "";
 
-      const reply = await handleMessage(lastUserMsg);
+      const reply = await handleMessage(lastUserMsg, messages);
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(chatResponse(reply)));

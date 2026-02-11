@@ -1,0 +1,11 @@
+version: "0.5"
+
+processes:
+  landing:
+    command: npm exec -- vite
+    availability:
+      restart: on_failure
+  api:
+    command: NODE_ENV=development npm exec -- tsx watch server/index.ts
+    availability:
+      restart: on_failure

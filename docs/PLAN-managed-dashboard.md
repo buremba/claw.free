@@ -55,7 +55,7 @@ During the deploy flow (`/api/deploy/start`), after creating the VM, store the `
 - Authenticates user, verifies ownership
 - Uses stored refresh token to get fresh access token
 - Calls `GET compute.googleapis.com/.../instances/{vm}` with user's token
-- Returns VM status + external IP + serial console output (last N lines)
+- Returns VM status + optional external IP + serial console output (last N lines)
 
 ### `functions/api/deploy/[id]/restart.ts` (POST)
 
@@ -86,7 +86,7 @@ The deploy flow already does OAuth with `compute` + `cloud-platform` scopes. For
 
 ### Status Check
 - VM running state (RUNNING / TERMINATED / STAGING)
-- External IP reachability (ping or HTTP check to port 18789)
+- Private connectivity readiness (for example Tailscale/IAP enabled, if configured)
 - Last 50 lines of serial console output (helps debug startup failures)
 
 ### Restart
