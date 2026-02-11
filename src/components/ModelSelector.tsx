@@ -1,5 +1,5 @@
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, KimiIcon } from "@/components/icons"
-import type { LlmProvider, DeployMode } from "@/lib/wizard-state"
+import type { LlmProvider } from "@/lib/wizard-state"
 import type { ComponentType } from "react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -40,13 +40,11 @@ const providers: {
 export function ModelSelector({
   value,
   onChange,
-  deployMode,
   nvidiaApiKey,
   onNvidiaApiKeyChange,
 }: {
   value: LlmProvider | null
   onChange: (v: LlmProvider) => void
-  deployMode?: DeployMode
   nvidiaApiKey?: string
   onNvidiaApiKeyChange?: (v: string) => void
 }) {
@@ -124,12 +122,9 @@ export function ModelSelector({
                 Generate an API key
               </a>
             </p>
-            {deployMode === "installer" && (
-              <p>3. You'll be prompted to enter it during deploy</p>
-            )}
           </div>
 
-          {deployMode === "managed" && onNvidiaApiKeyChange && (
+          {onNvidiaApiKeyChange && (
             <div className="space-y-2">
               <Label htmlFor="nvidia-api-key">NVIDIA API Key</Label>
               <Input

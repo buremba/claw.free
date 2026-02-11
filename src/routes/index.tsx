@@ -7,15 +7,12 @@ import { ModelSelector } from "@/components/ModelSelector"
 import { ChannelSelector, type Channel } from "@/components/ChannelSelector"
 import { CloudSelector, type CloudProvider } from "@/components/CloudSelector"
 import { RegionPicker } from "@/components/RegionPicker"
-import { DeployModeSelector } from "@/components/DeployModeSelector"
 import { OpenClawLogo } from "@/components/OpenClawLogo"
 import {
-  buildCloudShellUrl,
   buildAuthUrl,
   guessRegion,
   type LlmProvider,
   type Region,
-  type DeployMode,
 } from "@/lib/wizard-state"
 
 export const Route = createFileRoute("/")({
@@ -33,7 +30,6 @@ function Home() {
   const [channel, setChannel] = useState<Channel | null>(null)
   const [cloud, setCloud] = useState<CloudProvider | null>(null)
   const [region, setRegion] = useState<Region>(guessRegion())
-  const [deployMode, setDeployMode] = useState<DeployMode>("installer")
   const [telegramToken, setTelegramToken] = useState("")
   const [telegramUserId, setTelegramUserId] = useState("")
   const [nvidiaApiKey, setNvidiaApiKey] = useState("")
@@ -63,10 +59,7 @@ function Home() {
     }
   }, [telegramToken])
 
-  const isInstaller = deployMode === "installer"
-  const isManaged = deployMode === "managed"
-
-  const managedFieldsFilled =
+  const fieldsFilled =
     telegramToken.trim() !== "" &&
     telegramUserId.trim() !== "" &&
     (llmProvider !== "kimi" || nvidiaApiKey.trim() !== "")
@@ -75,25 +68,17 @@ function Home() {
     llmProvider !== null &&
     channel !== null &&
     cloud === "gcp" &&
-    (isInstaller || managedFieldsFilled)
+    fieldsFilled
 
   const deployUrl = canDeploy
-    ? isInstaller
-      ? buildCloudShellUrl({
-          step: 0,
-          llmProvider: llmProvider!,
-          telegramToken: "",
-          telegramUserId: "",
-          region,
-        })
-      : buildAuthUrl({
-          provider: llmProvider!,
-          channel: channel!,
-          region,
-          telegramToken,
-          telegramUserId,
-          nvidiaApiKey: llmProvider === "kimi" ? nvidiaApiKey : undefined,
-        })
+    ? buildAuthUrl({
+        provider: llmProvider!,
+        channel: channel!,
+        region,
+        telegramToken,
+        telegramUserId,
+        nvidiaApiKey: llmProvider === "kimi" ? nvidiaApiKey : undefined,
+      })
     : "#"
 
   const providerName = llmProvider ? PROVIDER_NAMES[llmProvider] : null
@@ -110,9 +95,7 @@ function Home() {
         <p className="text-muted-foreground mt-3 text-lg">
           One-click deploy your own 24/7 AI assistant into your cloud account.
           <br />
-          {isManaged
-            ? "No servers to manage. We never see your prompts or API tokens."
-            : "No servers to manage, no credentials shared with us."}
+          No servers to manage. We never see your prompts or API tokens.
         </p>
       </div>
 
@@ -122,12 +105,11 @@ function Home() {
         <ModelSelector
           value={llmProvider}
           onChange={setLlmProvider}
-          deployMode={deployMode}
           nvidiaApiKey={nvidiaApiKey}
           onNvidiaApiKeyChange={setNvidiaApiKey}
         />
 
-        {/* Cloud selector — before channel */}
+        {/* Cloud selector */}
         <CloudSelector value={cloud} onChange={setCloud} />
 
         {/* Channel selector */}
@@ -139,28 +121,8 @@ function Home() {
             {/* Region picker */}
             <RegionPicker value={region} onChange={setRegion} />
 
-            {/* Deploy mode selector */}
-            <DeployModeSelector value={deployMode} onChange={setDeployMode} />
-
-            {/* Installer mode: Telegram hint */}
-            {isInstaller && channel === "telegram" && (
-              <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-1.5">
-                <p className="font-medium text-foreground">You'll set up Telegram during deployment:</p>
-                <p>
-                  1. Open{" "}
-                  <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" className="text-primary underline">
-                    @BotFather
-                  </a>
-                  , send{" "}
-                  <code className="bg-muted px-1 py-0.5 rounded text-xs">/newbot</code>
-                  , and copy the token
-                </p>
-                <p>2. Cloud Shell will prompt you for the token and auto-detect your user ID</p>
-              </div>
-            )}
-
-            {/* Managed mode: Telegram inputs */}
-            {isManaged && channel === "telegram" && (
+            {/* Telegram inputs */}
+            {channel === "telegram" && (
               <div className="space-y-4">
                 <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-1.5">
                   <p className="font-medium text-foreground">Set up your Telegram bot:</p>
@@ -234,19 +196,11 @@ function Home() {
               disabled={!canDeploy}
             >
               {canDeploy ? (
-                isInstaller ? (
-                  <a href={deployUrl} target="_blank" rel="noopener noreferrer">
-                    Open in Cloud Shell
-                  </a>
-                ) : (
-                  <a href={deployUrl}>
-                    Login with Google
-                  </a>
-                )
-              ) : isManaged ? (
-                "Login with Google"
+                <a href={deployUrl}>
+                  Login with Google
+                </a>
               ) : (
-                "Open in Cloud Shell"
+                "Login with Google"
               )}
             </Button>
           </>
@@ -266,17 +220,10 @@ function Home() {
               : `You only pay for AI usage through ${providerName ? `your ${providerName} subscription or API plan` : "your AI provider"}.`}
           </FaqItem>
 
-          <FaqItem title="What's the difference between Installer and Managed?">
-            <span className="text-foreground font-medium">Installer</span> opens Google Cloud Shell — you run the deploy and manage the server yourself. claw.free never touches your account.{" "}
-            <span className="text-foreground font-medium">Managed</span> lets claw.free provision the VM for you. You can see your deployed clawdbots in our dashboard and troubleshoot from there.
-          </FaqItem>
-
           <FaqItem title="Is this secure?">
             We never see your prompts or API tokens — you log in with{" "}
             <span className="text-foreground font-medium">{providerName ?? "your AI provider"}</span> directly on your server.{" "}
-            {isInstaller
-              ? "In Installer mode, claw.free never sees any of your credentials."
-              : "In Managed mode, we use Google OAuth to provision your VM but your API keys and conversations stay on your server."}
+            We use Google OAuth to provision your VM but your API keys and conversations stay on your server.
           </FaqItem>
 
         </div>
