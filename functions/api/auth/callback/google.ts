@@ -1,3 +1,5 @@
+import { sessionCookie } from "../../../lib/session"
+
 interface Env {
   KV: KVNamespace
   GOOGLE_CLIENT_ID: string
@@ -13,8 +15,8 @@ interface TokenResponse {
 
 interface GcpProject {
   projectId: string
-  name: string
-  lifecycleState: string
+  displayName: string
+  state: string
 }
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
@@ -34,10 +36,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const config = JSON.parse(sessionData) as {
     provider: string
     channel: string
-    region: string
-    telegramToken: string
-    telegramUserId: string
-    nvidiaApiKey: string
+    cloud: string
   }
 
   // Exchange code for tokens
@@ -60,9 +59,31 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
   const tokens = (await tokenRes.json()) as TokenResponse
 
+  // Fetch user profile
+  let userName = ""
+  let userEmail = ""
+  let userPicture = ""
+  try {
+    const userRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    })
+    if (userRes.ok) {
+      const user = (await userRes.json()) as {
+        name?: string
+        email?: string
+        picture?: string
+      }
+      userName = user.name ?? ""
+      userEmail = user.email ?? ""
+      userPicture = user.picture ?? ""
+    }
+  } catch {
+    // Non-critical — continue without profile info
+  }
+
   // Fetch user's GCP projects
   const projectsRes = await fetch(
-    "https://cloudresourcemanager.googleapis.com/v1/projects?filter=lifecycleState:ACTIVE",
+    "https://cloudresourcemanager.googleapis.com/v3/projects:search?query=state:ACTIVE",
     {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     },
@@ -73,21 +94,38 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     const data = (await projectsRes.json()) as { projects?: GcpProject[] }
     projects = (data.projects ?? []).map((p) => ({
       projectId: p.projectId,
-      name: p.name,
+      name: p.displayName,
     }))
+  } else {
+    console.error("Projects API error:", projectsRes.status, await projectsRes.text())
   }
 
-  // Store session with tokens and projects
+  // Store session with tokens, profile, and projects
   await context.env.KV.put(
     `session:${sessionId}`,
     JSON.stringify({
       ...config,
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
+      userName,
+      userEmail,
+      userPicture,
       projects,
     }),
     { expirationTtl: 600 },
   )
 
-  return Response.redirect(`${url.origin}/deploy?session=${sessionId}`, 302)
+  // Redirect to homepage with pre-selected values; session lives in a cookie
+  const redirectUrl = new URL("/", url.origin)
+  redirectUrl.searchParams.set("provider", config.provider)
+  redirectUrl.searchParams.set("channel", config.channel)
+  redirectUrl.searchParams.set("cloud", config.cloud)
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: redirectUrl.toString(),
+      "Set-Cookie": sessionCookie(sessionId, url.origin),
+    },
+  })
 }

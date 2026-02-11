@@ -26,3 +26,7 @@ result
 *.njsproj
 *.sln
 *.sw?
+
+# Local runtime/dev secrets and Cloudflare temp state
+.dev.vars
+.wrangler/

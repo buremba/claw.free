@@ -8,16 +8,13 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const url = new URL(context.request.url)
   const provider = url.searchParams.get("provider") ?? "claude"
   const channel = url.searchParams.get("channel") ?? "telegram"
-  const region = url.searchParams.get("region") ?? "us-central1"
-  const telegramToken = url.searchParams.get("telegramToken") ?? ""
-  const telegramUserId = url.searchParams.get("telegramUserId") ?? ""
-  const nvidiaApiKey = url.searchParams.get("nvidiaApiKey") ?? ""
+  const cloud = url.searchParams.get("cloud") ?? "gcp"
 
   const sessionId = crypto.randomUUID()
 
   await context.env.KV.put(
     `session:${sessionId}`,
-    JSON.stringify({ provider, channel, region, telegramToken, telegramUserId, nvidiaApiKey }),
+    JSON.stringify({ provider, channel, cloud }),
     { expirationTtl: 300 },
   )
 

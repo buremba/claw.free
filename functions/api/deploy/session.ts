@@ -1,13 +1,14 @@
+import { getSessionId } from "../../lib/session"
+
 interface Env {
   KV: KVNamespace
 }
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
-  const url = new URL(context.request.url)
-  const sessionId = url.searchParams.get("id")
+  const sessionId = getSessionId(context.request)
 
   if (!sessionId) {
-    return Response.json({ error: "Missing session ID" }, { status: 400 })
+    return Response.json({ error: "Not logged in" }, { status: 401 })
   }
 
   const data = await context.env.KV.get(`session:${sessionId}`)
@@ -18,20 +19,18 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const session = JSON.parse(data) as {
     provider: string
     channel: string
-    region: string
-    telegramToken?: string
-    telegramUserId?: string
-    nvidiaApiKey?: string
+    userName?: string
+    userEmail?: string
+    userPicture?: string
     projects: { projectId: string; name: string }[]
   }
 
-  // Return session data without secrets (OAuth tokens, API keys)
   return Response.json({
     provider: session.provider,
     channel: session.channel,
-    region: session.region,
-    telegramToken: session.telegramToken ?? "",
-    telegramUserId: session.telegramUserId ?? "",
+    userName: session.userName ?? "",
+    userEmail: session.userEmail ?? "",
+    userPicture: session.userPicture ?? "",
     projects: session.projects ?? [],
   })
 }

@@ -4,10 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "npx wrangler pages dev --port 8788 -- npx vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "npx wrangler pages dev --port 8788 -- npx vite preview"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",

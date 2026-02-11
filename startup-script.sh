@@ -3,7 +3,6 @@ set -euo pipefail
 
 # ── Fetch metadata ──
 TELEGRAM_TOKEN=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/TELEGRAM_TOKEN" -H "Metadata-Flavor: Google")
-TELEGRAM_USER_ID=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/TELEGRAM_USER_ID" -H "Metadata-Flavor: Google")
 LLM_PROVIDER=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/LLM_PROVIDER" -H "Metadata-Flavor: Google")
 
 # ── Install Nix (multi-user, daemon mode) ──
@@ -61,7 +60,7 @@ cat > /opt/openclaw/openclaw.json <<EOF
   "channels": {
     "telegram": {
       "token": "$TELEGRAM_TOKEN",
-      "allowedUsers": ["$TELEGRAM_USER_ID"]
+      "allowedUsers": []
     }
   },
   "models": {

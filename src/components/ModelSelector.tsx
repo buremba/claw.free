@@ -1,8 +1,6 @@
 import { ClaudeIcon, OpenAIIcon, GeminiIcon, KimiIcon } from "@/components/icons"
 import type { LlmProvider } from "@/lib/wizard-state"
 import type { ComponentType } from "react"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 
 const providers: {
   id: LlmProvider | "gemini"
@@ -18,21 +16,21 @@ const providers: {
     icon: KimiIcon,
     available: true,
     free: true,
-    hint: "Free via NVIDIA — sign up and get an API key.",
+    hint: "Free via NVIDIA — your bot will guide you through API key setup.",
   },
   {
     id: "claude",
     name: "Claude",
     icon: ClaudeIcon,
     available: true,
-    hint: "Requires an Anthropic API key or Claude Pro subscription.",
+    hint: "Your bot will guide you through Anthropic API key setup.",
   },
   {
     id: "openai",
     name: "ChatGPT",
     icon: OpenAIIcon,
     available: true,
-    hint: "Requires an OpenAI API key or ChatGPT Plus subscription.",
+    hint: "Your bot will guide you through OpenAI API key setup.",
   },
   { id: "gemini", name: "Gemini", icon: GeminiIcon, available: false },
 ]
@@ -40,13 +38,9 @@ const providers: {
 export function ModelSelector({
   value,
   onChange,
-  nvidiaApiKey,
-  onNvidiaApiKeyChange,
 }: {
   value: LlmProvider | null
   onChange: (v: LlmProvider) => void
-  nvidiaApiKey?: string
-  onNvidiaApiKeyChange?: (v: string) => void
 }) {
   const selected = providers.find((p) => p.id === value)
 
@@ -90,53 +84,8 @@ export function ModelSelector({
         })}
       </div>
 
-      {/* Subscription / setup hint */}
       {selected?.hint && (
         <p className="text-sm text-muted-foreground">{selected.hint}</p>
-      )}
-
-      {/* Kimi: NVIDIA API key setup */}
-      {value === "kimi" && (
-        <div className="space-y-3">
-          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-1.5">
-            <p className="font-medium text-foreground">Get your free NVIDIA API key:</p>
-            <p>
-              1.{" "}
-              <a
-                href="https://build.nvidia.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary underline"
-              >
-                Sign up at build.nvidia.com
-              </a>
-            </p>
-            <p>
-              2.{" "}
-              <a
-                href="https://build.nvidia.com/settings/api-keys"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary underline"
-              >
-                Generate an API key
-              </a>
-            </p>
-          </div>
-
-          {onNvidiaApiKeyChange && (
-            <div className="space-y-2">
-              <Label htmlFor="nvidia-api-key">NVIDIA API Key</Label>
-              <Input
-                id="nvidia-api-key"
-                type="text"
-                placeholder="nvapi-..."
-                value={nvidiaApiKey ?? ""}
-                onChange={(e) => onNvidiaApiKeyChange(e.target.value)}
-              />
-            </div>
-          )}
-        </div>
       )}
     </div>
   )

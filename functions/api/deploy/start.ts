@@ -1,12 +1,13 @@
+import { getSessionId } from "../../lib/session"
+
 interface Env {
   KV: KVNamespace
 }
 
 interface DeployRequest {
-  sessionId: string
   projectId: string
   telegramToken: string
-  telegramUserId: string
+  region: string
 }
 
 interface GcpOperation {
@@ -17,17 +18,23 @@ interface GcpOperation {
 }
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
-  const body = (await context.request.json()) as DeployRequest
-  const { sessionId, projectId, telegramToken, telegramUserId } = body
+  const sessionId = getSessionId(context.request)
 
-  if (!sessionId || !projectId || !telegramToken || !telegramUserId) {
+  if (!sessionId) {
+    return Response.json({ error: "Not logged in" }, { status: 401 })
+  }
+
+  const body = (await context.request.json()) as DeployRequest
+  const { projectId, telegramToken, region } = body
+
+  if (!projectId || !telegramToken || !region) {
     return Response.json(
       { error: "Missing required fields" },
       { status: 400 },
     )
   }
 
-  const sessionData = await context.env.KV.get(sessionId.startsWith("session:") ? sessionId : `session:${sessionId}`)
+  const sessionData = await context.env.KV.get(`session:${sessionId}`)
   if (!sessionData) {
     return Response.json({ error: "Session expired" }, { status: 400 })
   }
@@ -35,13 +42,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   const session = JSON.parse(sessionData) as {
     provider: string
     channel: string
-    region: string
     accessToken: string
     refreshToken?: string
-    nvidiaApiKey?: string
   }
 
-  const { accessToken, region, provider } = session
+  const { accessToken, provider } = session
   const zone = `${region}-a`
   const vmName = "openclaw-vm"
   const deploymentId = crypto.randomUUID()
@@ -51,12 +56,28 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     "Content-Type": "application/json",
   }
 
-  // 1. Enable Compute Engine API
+  // 1. Enable Compute Engine API and wait for it to propagate
   try {
-    await fetch(
+    const enableRes = await fetch(
       `https://serviceusage.googleapis.com/v1/projects/${projectId}/services/compute.googleapis.com:enable`,
       { method: "POST", headers },
     )
+    if (enableRes.ok) {
+      const op = (await enableRes.json()) as { name?: string; done?: boolean }
+      if (op.name && !op.done) {
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => setTimeout(r, 2000))
+          const pollRes = await fetch(
+            `https://serviceusage.googleapis.com/v1/${op.name}`,
+            { headers },
+          )
+          if (pollRes.ok) {
+            const pollData = (await pollRes.json()) as { done?: boolean }
+            if (pollData.done) break
+          }
+        }
+      }
+    }
   } catch {
     // May already be enabled
   }
@@ -118,15 +139,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
           items: [
             { key: "startup-script-url", value: startupScriptUrl },
             { key: "TELEGRAM_TOKEN", value: telegramToken },
-            { key: "TELEGRAM_USER_ID", value: telegramUserId },
             { key: "LLM_PROVIDER", value: provider },
-            ...(provider === "kimi"
-              ? [
-                  { key: "NVIDIA_API_KEY", value: session.nvidiaApiKey ?? "" },
-                  { key: "LLM_BASE_URL", value: "https://integrate.api.nvidia.com/v1/chat/completions" },
-                  { key: "LLM_MODEL_ID", value: "moonshotai/kimi-k2.5" },
-                ]
-              : []),
           ],
         },
       }),

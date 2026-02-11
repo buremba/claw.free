@@ -10,19 +10,13 @@ export const REGIONS: { id: Region; label: string; location: string }[] = [
 export function buildAuthUrl(params: {
   provider: string
   channel: string
-  region: string
-  telegramToken?: string
-  telegramUserId?: string
-  nvidiaApiKey?: string
+  cloud: string
 }): string {
   const qs = new URLSearchParams({
     provider: params.provider,
     channel: params.channel,
-    region: params.region,
+    cloud: params.cloud,
   })
-  if (params.telegramToken) qs.set("telegramToken", params.telegramToken)
-  if (params.telegramUserId) qs.set("telegramUserId", params.telegramUserId)
-  if (params.nvidiaApiKey) qs.set("nvidiaApiKey", params.nvidiaApiKey)
   return `/api/auth/google?${qs.toString()}`
 }
 
