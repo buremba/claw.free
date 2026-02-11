@@ -38,7 +38,7 @@ export function buildCloudShellUrl(state: WizardState): string {
     params.set("LLM_MODEL_ID", "moonshotai/kimi-k2.5")
   }
 
-  return `https://shell.cloud.google.com/cloudshell/editor?${params.toString()}`
+  return `https://ssh.cloud.google.com/cloudshell/open?${params.toString()}`
 }
 
 export function buildAuthUrl(params: {
