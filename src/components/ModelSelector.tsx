@@ -81,8 +81,8 @@ export function ModelSelector({
               {p.free && (
                 <span className="text-xs font-semibold text-green-500">Free</span>
               )}
-              {isSelected && (
-                <svg className="h-3 w-3 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              {p.available && (
+                <svg className={`h-3 w-3 ${isSelected ? "text-primary" : "invisible"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
               )}

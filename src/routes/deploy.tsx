@@ -40,6 +40,8 @@ function DeployPage() {
   const [deploymentId, setDeploymentId] = useState<string | null>(null)
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null)
   const [deploying, setDeploying] = useState(false)
+  const [detectingUserId, setDetectingUserId] = useState(false)
+  const [detectError, setDetectError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!sessionId) {
@@ -85,6 +87,29 @@ function DeployPage() {
 
     return () => clearInterval(interval)
   }, [deploymentId])
+
+  const detectTelegramUserId = useCallback(async () => {
+    if (!telegramToken.trim()) return
+    setDetectingUserId(true)
+    setDetectError(null)
+    try {
+      const res = await fetch("/api/telegram/detect-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: telegramToken.trim() }),
+      })
+      const data = (await res.json()) as { userId?: string; error?: string }
+      if (!res.ok || !data.userId) {
+        setDetectError(data.error ?? "Could not detect user ID")
+      } else {
+        setTelegramUserId(data.userId)
+      }
+    } catch {
+      setDetectError("Failed to detect user ID")
+    } finally {
+      setDetectingUserId(false)
+    }
+  }, [telegramToken])
 
   const handleDeploy = useCallback(async () => {
     if (!selectedProject || !telegramToken || !telegramUserId) return
@@ -249,20 +274,10 @@ function DeployPage() {
               </a>
               , send{" "}
               <code className="bg-muted px-1 py-0.5 rounded text-xs">/newbot</code>
-              , and copy the token
+              , and copy the token below
             </p>
-            <p>
-              2. Message{" "}
-              <a
-                href="https://t.me/userinfobot"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary underline"
-              >
-                @userinfobot
-              </a>{" "}
-              to get your user ID
-            </p>
+            <p>2. Send any message to your new bot</p>
+            <p>3. Click "Detect my ID" to auto-fill your user ID</p>
           </div>
 
           <div className="space-y-2">
@@ -278,13 +293,28 @@ function DeployPage() {
 
           <div className="space-y-2">
             <Label htmlFor="telegram-user-id">Your User ID</Label>
-            <Input
-              id="telegram-user-id"
-              type="text"
-              placeholder="123456789"
-              value={telegramUserId}
-              onChange={(e) => setTelegramUserId(e.target.value)}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="telegram-user-id"
+                type="text"
+                placeholder="123456789"
+                value={telegramUserId}
+                onChange={(e) => setTelegramUserId(e.target.value)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 self-center"
+                disabled={!telegramToken.trim() || detectingUserId}
+                onClick={detectTelegramUserId}
+              >
+                {detectingUserId ? "Detecting..." : "Detect my ID"}
+              </Button>
+            </div>
+            {detectError && (
+              <p className="text-xs text-destructive">{detectError}</p>
+            )}
           </div>
         </div>
 

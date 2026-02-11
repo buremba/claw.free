@@ -28,7 +28,6 @@ export function buildCloudShellUrl(state: WizardState): string {
     cloudshell_git_repo: "https://github.com/buremba/claw.free",
     cloudshell_tutorial: "tutorial.md",
     cloudshell_env_vars: envVars.join(","),
-    "cloudshell_open_in_editor": "true",
   })
 
   params.set("GCP_REGION", state.region)

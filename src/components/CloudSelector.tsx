@@ -37,7 +37,7 @@ export function CloudSelector({
               onClick={() => {
                 if (c.available) onChange(c.id)
               }}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-all ${
+              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-sm font-medium transition-all ${
                 !c.available
                   ? "opacity-40 cursor-not-allowed border-border text-muted-foreground"
                   : selected
@@ -50,8 +50,8 @@ export function CloudSelector({
               {c.free && (
                 <span className="text-xs font-semibold text-green-500">Free</span>
               )}
-              {selected && (
-                <svg className="h-3 w-3 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              {c.available && (
+                <svg className={`h-3 w-3 ${selected ? "text-primary" : "invisible"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
               )}

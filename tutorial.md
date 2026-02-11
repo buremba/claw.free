@@ -1,6 +1,6 @@
 # Deploy OpenClaw with claw.free
 
-## Confirm your GCP project
+## Set up and deploy
 
 Welcome! This tutorial will deploy OpenClaw to a free-tier GCP VM.
 
@@ -13,25 +13,20 @@ Make sure you're in the correct GCP project. You can check and change your proje
 
 <walkthrough-project-setup></walkthrough-project-setup>
 
-Click **Next** to continue.
-
-## Deploy OpenClaw
-
-We'll now create your VM and install everything. This takes 3-5 minutes.
-
-Run the deployment script:
+Now run the deployment script. It will prompt you for your Telegram bot token and user ID.
 
 ```bash
 bash deploy.sh
 ```
 
 The script will:
-1. Enable the Compute Engine API
-2. Create firewall rules
-3. Create an e2-micro VM with all dependencies
-4. Wait for the VM to be ready
+1. Ask for your Telegram bot token and user ID
+2. Enable the Compute Engine API
+3. Create firewall rules
+4. Create an e2-micro VM with all dependencies
+5. Wait for everything to be ready
 
-Click **Next** once the deployment completes.
+**Wait until you see "Deployment Complete" in the terminal before clicking Next.**
 
 ## You're all set!
 
@@ -46,5 +41,7 @@ Your OpenClaw instance is deployed!
 If you selected **Claude**: the bot will send you an authentication link. Click it, authorize, then paste the code back in Telegram.
 
 If you selected **ChatGPT**: the bot will send you a verification URL and a code. Go to the URL, enter the code, and the bot will detect when you're done.
+
+If you selected **Kimi K2.5**: no additional auth needed — your NVIDIA API key was set during deployment.
 
 <walkthrough-conclusion-trophy></walkthrough-conclusion-trophy>

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useCallback } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -37,6 +37,31 @@ function Home() {
   const [telegramToken, setTelegramToken] = useState("")
   const [telegramUserId, setTelegramUserId] = useState("")
   const [nvidiaApiKey, setNvidiaApiKey] = useState("")
+  const [detectingUserId, setDetectingUserId] = useState(false)
+  const [detectError, setDetectError] = useState<string | null>(null)
+
+  const detectTelegramUserId = useCallback(async () => {
+    if (!telegramToken.trim()) return
+    setDetectingUserId(true)
+    setDetectError(null)
+    try {
+      const res = await fetch("/api/telegram/detect-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: telegramToken.trim() }),
+      })
+      const data = (await res.json()) as { userId?: string; error?: string }
+      if (!res.ok || !data.userId) {
+        setDetectError(data.error ?? "Could not detect user ID")
+      } else {
+        setTelegramUserId(data.userId)
+      }
+    } catch {
+      setDetectError("Failed to detect user ID")
+    } finally {
+      setDetectingUserId(false)
+    }
+  }, [telegramToken])
 
   const isInstaller = deployMode === "installer"
   const isManaged = deployMode === "managed"
@@ -71,7 +96,7 @@ function Home() {
         })
     : "#"
 
-  const providerName = llmProvider ? PROVIDER_NAMES[llmProvider] : "your AI provider"
+  const providerName = llmProvider ? PROVIDER_NAMES[llmProvider] : null
   const isFreeProvider = llmProvider === "kimi"
 
   return (
@@ -130,14 +155,7 @@ function Home() {
                   <code className="bg-muted px-1 py-0.5 rounded text-xs">/newbot</code>
                   , and copy the token
                 </p>
-                <p>
-                  2. Message{" "}
-                  <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" className="text-primary underline">
-                    @userinfobot
-                  </a>{" "}
-                  to get your user ID
-                </p>
-                <p>3. Cloud Shell will prompt you to enter both during deploy</p>
+                <p>2. Cloud Shell will prompt you for the token and auto-detect your user ID</p>
               </div>
             )}
 
@@ -153,15 +171,10 @@ function Home() {
                     </a>
                     , send{" "}
                     <code className="bg-muted px-1 py-0.5 rounded text-xs">/newbot</code>
-                    , and copy the token
+                    , and copy the token below
                   </p>
-                  <p>
-                    2. Message{" "}
-                    <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" className="text-primary underline">
-                      @userinfobot
-                    </a>{" "}
-                    to get your user ID
-                  </p>
+                  <p>2. Send any message to your new bot</p>
+                  <p>3. Click "Detect my ID" to auto-fill your user ID</p>
                 </div>
 
                 <div className="space-y-2">
@@ -177,13 +190,28 @@ function Home() {
 
                 <div className="space-y-2">
                   <Label htmlFor="telegram-user-id">Your User ID</Label>
-                  <Input
-                    id="telegram-user-id"
-                    type="text"
-                    placeholder="123456789"
-                    value={telegramUserId}
-                    onChange={(e) => setTelegramUserId(e.target.value)}
-                  />
+                  <div className="flex gap-2">
+                    <Input
+                      id="telegram-user-id"
+                      type="text"
+                      placeholder="123456789"
+                      value={telegramUserId}
+                      onChange={(e) => setTelegramUserId(e.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 self-center"
+                      disabled={!telegramToken.trim() || detectingUserId}
+                      onClick={detectTelegramUserId}
+                    >
+                      {detectingUserId ? "Detecting..." : "Detect my ID"}
+                    </Button>
+                  </div>
+                  {detectError && (
+                    <p className="text-xs text-destructive">{detectError}</p>
+                  )}
                 </div>
               </div>
             )}
@@ -195,7 +223,7 @@ function Home() {
               the server.
               {isFreeProvider
                 ? " Kimi K2.5 is free via NVIDIA — no AI costs either."
-                : ` You only pay for AI usage through your ${providerName} plan.`}
+                : ` You only pay for AI usage through ${providerName ? `your ${providerName} plan` : "your AI provider"}.`}
             </div>
 
             {/* Deploy button */}
@@ -235,7 +263,7 @@ function Home() {
               : "Cloud providers like Google Cloud offer always-free tiers with enough compute to run OpenClaw at no cost."}{" "}
             {isFreeProvider
               ? "Kimi K2.5 is available for free through NVIDIA's API, so there are no AI costs either."
-              : `You only pay for AI usage through your ${providerName} subscription or API plan.`}
+              : `You only pay for AI usage through ${providerName ? `your ${providerName} subscription or API plan` : "your AI provider"}.`}
           </FaqItem>
 
           <FaqItem title="What's the difference between Installer and Managed?">
@@ -245,7 +273,7 @@ function Home() {
 
           <FaqItem title="Is this secure?">
             We never see your prompts or API tokens — you log in with{" "}
-            <span className="text-foreground font-medium">{providerName}</span> directly on your server.{" "}
+            <span className="text-foreground font-medium">{providerName ?? "your AI provider"}</span> directly on your server.{" "}
             {isInstaller
               ? "In Installer mode, claw.free never sees any of your credentials."
               : "In Managed mode, we use Google OAuth to provision your VM but your API keys and conversations stay on your server."}
