@@ -70,6 +70,17 @@ Useful process manager commands:
 
 If you are not using `nix develop`, install `process-compose` separately (for example `brew install process-compose` on macOS), or use `npm run dev:legacy`.
 
+### Postgres for local dev
+
+Some API routes require Postgres (`DATABASE_URL`). In `NODE_ENV=development` the API boots even if Postgres is down, but DB-backed routes will fail.
+
+### Testing
+
+Recommended loop:
+- `npm run dev` for hot reload (Vite + API).
+- point `DATABASE_URL` at a real Postgres instance (Railway Postgres, etc.) so you exercise migrations and DB behavior realistically.
+- use `npm run verify` before pushing (lint + tests + build).
+
 ## Project structure
 
 ```

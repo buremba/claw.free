@@ -6,6 +6,9 @@ processes:
     availability:
       restart: on_failure
   api:
-    command: NODE_ENV=development npm exec -- tsx watch server/index.ts
+    # NOTE: this does not start Postgres. Run one separately (or via your own tooling),
+    # and ensure DATABASE_URL is set. In NODE_ENV=development the API will boot even
+    # if DB is down, but DB-backed routes will fail.
+    command: PORT=8788 NODE_ENV=development npm exec -- tsx watch server/index.ts
     availability:
       restart: on_failure

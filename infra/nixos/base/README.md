@@ -5,13 +5,21 @@ This directory contains the first declarative NixOS base for claw.free managed O
 ## What it configures
 
 - `openclaw-setup.service`
-  - Reads VM metadata (`TELEGRAM_TOKEN`, `LLM_PROVIDER`, `BOT_NAME`)
+  - Reads VM metadata:
+    - `TELEGRAM_TOKEN`
+    - `LLM_PROVIDER` (optional fallback to module default)
+    - `GATEWAY_TOKEN` (optional; generated per-VM if missing)
   - Creates runtime directories under `/var/lib/openclaw`
   - Writes `/var/lib/openclaw/home/.openclaw/openclaw.json`
 - `claw-free-provider.service`
   - Runs the local bootstrap provider on port `3456`
 - `openclaw-gateway.service`
   - Runs native OpenClaw gateway on port `18789`
+- `openclaw-relay.service`
+  - Optional WebSocket tunnel client (used for GCP agents) that connects outbound to the relay server
+  - Reads VM metadata: `RELAY_URL`, `RELAY_TOKEN`
+- `openclaw-gateway-ready.service`
+  - Publishes guest-attribute `openclaw/setup=ready` only after the gateway is actually reachable
 - AI CLIs (OpenClaw/Claude/Codex/Gemini)
   - Installed declaratively via a pinned Nix package bundle
   - No runtime npm install during VM boot
