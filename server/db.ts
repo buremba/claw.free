@@ -1,8 +1,11 @@
 import pg from "pg"
+import { encrypt, decrypt } from "./lib/crypto.js"
 
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 })
+
+// --- Existing user/account types & queries (kept for Google OAuth web flow) ---
 
 export interface User {
   id: string
@@ -106,4 +109,209 @@ export async function upsertGoogleAccount(
     [crypto.randomUUID(), accountId, userId, accessToken, refreshToken, expiresAt, scope, now, now],
   )
   return result.rows[0]
+}
+
+// --- Channel Identity (Telegram, WhatsApp, Discord) ---
+
+export interface ChannelIdentity {
+  id: string
+  userId: string
+  channelType: string
+  channelUserId: string
+  displayName: string | null
+  avatarUrl: string | null
+  rawData: unknown | null
+  createdAt: Date
+}
+
+export async function findOrCreateTelegramUser(
+  telegramId: string,
+  displayName: string | null,
+  avatarUrl: string | null,
+  rawData: unknown | null,
+): Promise<{ userId: string; channelIdentityId: string }> {
+  // Check if this telegram user already exists
+  const existing = await pool.query<{ id: string; user_id: string }>(
+    `SELECT id, user_id FROM channel_identity
+     WHERE channel_type = 'telegram' AND channel_user_id = $1 LIMIT 1`,
+    [telegramId],
+  )
+  if (existing.rows[0]) {
+    return { userId: existing.rows[0].user_id, channelIdentityId: existing.rows[0].id }
+  }
+
+  // Create new user + channel identity in transaction
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const now = new Date()
+    const userId = crypto.randomUUID()
+    await client.query(
+      `INSERT INTO "user" (id, name, email, "emailVerified", image, "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, false, $4, $5, $6)`,
+      [userId, displayName ?? "Telegram User", `telegram:${telegramId}@noemail`, avatarUrl, now, now],
+    )
+    const ciId = crypto.randomUUID()
+    await client.query(
+      `INSERT INTO channel_identity (id, user_id, channel_type, channel_user_id, display_name, avatar_url, raw_data, created_at)
+       VALUES ($1, $2, 'telegram', $3, $4, $5, $6, $7)`,
+      [ciId, userId, telegramId, displayName, avatarUrl, JSON.stringify(rawData), now],
+    )
+    await client.query("COMMIT")
+    return { userId, channelIdentityId: ciId }
+  } catch (e) {
+    await client.query("ROLLBACK")
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
+// --- Deployments (persistent, replaces in-memory deploy store) ---
+
+export interface Deployment {
+  id: string
+  userId: string
+  botTokenEncrypted: string
+  botUsername: string | null
+  llmProvider: string
+  llmCredentialsEncrypted: string | null
+  cloudProvider: string
+  projectId: string | null
+  vmName: string | null
+  vmZone: string | null
+  vmIp: string | null
+  operationName: string | null
+  status: string
+  error: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export async function createDeployment(input: {
+  id: string
+  userId: string
+  botToken: string
+  botUsername: string | null
+  llmProvider: string
+  llmCredentials: string | null
+  projectId: string
+  vmName: string
+  vmZone: string
+  operationName: string | null
+  status: string
+}): Promise<Deployment> {
+  const now = new Date()
+  const result = await pool.query<Deployment>(
+    `INSERT INTO deployment (id, user_id, bot_token_encrypted, bot_username, llm_provider,
+       llm_credentials_encrypted, cloud_provider, project_id, vm_name, vm_zone, operation_name,
+       status, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, 'gcp', $7, $8, $9, $10, $11, $12, $13)
+     RETURNING *`,
+    [
+      input.id, input.userId, encrypt(input.botToken), input.botUsername,
+      input.llmProvider, input.llmCredentials ? encrypt(input.llmCredentials) : null,
+      input.projectId, input.vmName, input.vmZone, input.operationName,
+      input.status, now, now,
+    ],
+  )
+  return result.rows[0]
+}
+
+export async function getDeployment(id: string): Promise<Deployment | null> {
+  const result = await pool.query<Deployment>(
+    `SELECT * FROM deployment WHERE id = $1 LIMIT 1`,
+    [id],
+  )
+  return result.rows[0] ?? null
+}
+
+export async function updateDeployment(
+  id: string,
+  updates: Partial<Pick<Deployment, "status" | "vmIp" | "error" | "operationName">>,
+): Promise<void> {
+  const sets: string[] = [`updated_at = NOW()`]
+  const values: unknown[] = []
+  let idx = 1
+
+  if (updates.status !== undefined) {
+    sets.push(`status = $${idx++}`)
+    values.push(updates.status)
+  }
+  if (updates.vmIp !== undefined) {
+    sets.push(`vm_ip = $${idx++}`)
+    values.push(updates.vmIp)
+  }
+  if (updates.error !== undefined) {
+    sets.push(`error = $${idx++}`)
+    values.push(updates.error)
+  }
+  if (updates.operationName !== undefined) {
+    sets.push(`operation_name = $${idx++}`)
+    values.push(updates.operationName)
+  }
+
+  values.push(id)
+  await pool.query(
+    `UPDATE deployment SET ${sets.join(", ")} WHERE id = $${idx}`,
+    values,
+  )
+}
+
+export async function getDeploymentsByUserId(userId: string): Promise<Deployment[]> {
+  const result = await pool.query<Deployment>(
+    `SELECT * FROM deployment WHERE user_id = $1 ORDER BY created_at DESC`,
+    [userId],
+  )
+  return result.rows
+}
+
+export async function deleteDeployment(id: string): Promise<void> {
+  await pool.query(`DELETE FROM deployment WHERE id = $1`, [id])
+}
+
+export function decryptBotToken(deployment: Deployment): string {
+  return decrypt(deployment.botTokenEncrypted)
+}
+
+export function decryptLlmCredentials(deployment: Deployment): string | null {
+  if (!deployment.llmCredentialsEncrypted) return null
+  return decrypt(deployment.llmCredentialsEncrypted)
+}
+
+// --- Schema migration ---
+
+export async function ensureSchema(): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS channel_identity (
+      id UUID PRIMARY KEY,
+      user_id UUID REFERENCES "user"(id),
+      channel_type TEXT NOT NULL,
+      channel_user_id TEXT NOT NULL,
+      display_name TEXT,
+      avatar_url TEXT,
+      raw_data JSONB,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE(channel_type, channel_user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS deployment (
+      id UUID PRIMARY KEY,
+      user_id UUID REFERENCES "user"(id),
+      bot_token_encrypted TEXT NOT NULL,
+      bot_username TEXT,
+      llm_provider TEXT NOT NULL,
+      llm_credentials_encrypted TEXT,
+      cloud_provider TEXT DEFAULT 'gcp',
+      project_id TEXT,
+      vm_name TEXT,
+      vm_zone TEXT,
+      vm_ip TEXT,
+      operation_name TEXT,
+      status TEXT DEFAULT 'pending',
+      error TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `)
 }

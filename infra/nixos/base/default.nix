@@ -7,8 +7,6 @@ let
   configDir = "${homeDir}/.openclaw";
   configPath = "${configDir}/openclaw.json";
   workspaceDir = "${configDir}/workspace";
-  providerDir = "${stateDir}/provider";
-  providerEnvPath = "${stateDir}/provider.env";
   setupMarker = "${stateDir}/.setup-complete";
   guestAttributeSetupUrl = "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/openclaw/setup";
   aiCliBundle = pkgs.buildNpmPackage {
@@ -67,8 +65,6 @@ in
   config = lib.mkIf cfg.enable {
     networking.firewall.allowedTCPPorts = [ cfg.gatewayPort ];
 
-    # nix-ld provides /lib/ld-linux-x86-64.so.2 compatibility shim so
-    # prebuilt npm native binaries (node-llama-cpp etc.) can find glibc.
     programs.nix-ld.enable = true;
 
     environment.systemPackages = with pkgs; [
@@ -76,11 +72,12 @@ in
       git
       jq
       nodejs_22
+      python3
+      gcc
+      gnumake
       aiCliBundle
     ];
 
-    environment.etc."openclaw/provider/server.js".text = builtins.readFile "${clawfreeRoot}/provider/server.js";
-    environment.etc."openclaw/provider/package.json".text = builtins.readFile "${clawfreeRoot}/provider/package.json";
     environment.etc."openclaw/skill".source = "${clawfreeRoot}/skill";
 
     systemd.tmpfiles.rules = [
@@ -88,7 +85,6 @@ in
       "d ${homeDir} 0755 root root -"
       "d ${configDir} 0755 root root -"
       "d ${workspaceDir} 0755 root root -"
-      "d ${providerDir} 0755 root root -"
     ];
 
     systemd.services.openclaw-setup = {
@@ -96,7 +92,7 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
-      before = [ "claw-free-provider.service" "openclaw-gateway.service" ];
+      before = [ "openclaw-gateway.service" ];
 
       path = with pkgs; [
         bash
@@ -153,19 +149,116 @@ in
         fi
 
         LLM_PROVIDER="$(metadata_get LLM_PROVIDER "${cfg.defaultProvider}")"
+        LLM_CREDENTIALS="$(metadata_get LLM_CREDENTIALS "")"
 
-        install -d "${stateDir}" "${homeDir}" "${configDir}" "${workspaceDir}" "${providerDir}"
+        install -d "${stateDir}" "${homeDir}" "${configDir}" "${workspaceDir}"
 
-        cp /etc/openclaw/provider/server.js "${providerDir}/server.js"
-        cp /etc/openclaw/provider/package.json "${providerDir}/package.json"
-
+        # Install skills (management + onboarding)
         rm -rf "${configDir}/skills/claw-free"
         install -d "${configDir}/skills"
         cp -R /etc/openclaw/skill "${configDir}/skills/claw-free"
 
+        # Determine model config based on provider and whether credentials are provided
+        if [ -n "$LLM_CREDENTIALS" ]; then
+          # Credentials provided via Mini App - configure real LLM directly
+          case "$LLM_PROVIDER" in
+            claude)
+              MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n \
+                --arg apiKey "$LLM_CREDENTIALS" \
+                '{
+                  providers: {
+                    "anthropic": {
+                      apiKey: $apiKey,
+                      api: "anthropic",
+                      models: [{
+                        id: "claude-sonnet-4-20250514",
+                        name: "Claude Sonnet",
+                        reasoning: false,
+                        input: ["text"],
+                        cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+                        contextWindow: 200000,
+                        maxTokens: 8192
+                      }]
+                    }
+                  }
+                }')
+              PRIMARY_MODEL="anthropic/claude-sonnet-4-20250514"
+              ;;
+            openai)
+              MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n \
+                --arg apiKey "$LLM_CREDENTIALS" \
+                '{
+                  providers: {
+                    "openai": {
+                      apiKey: $apiKey,
+                      api: "openai-completions",
+                      models: [{
+                        id: "gpt-4o",
+                        name: "GPT-4o",
+                        reasoning: false,
+                        input: ["text"],
+                        cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+                        contextWindow: 128000,
+                        maxTokens: 16384
+                      }]
+                    }
+                  }
+                }')
+              PRIMARY_MODEL="openai/gpt-4o"
+              ;;
+            kimi)
+              MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n \
+                --arg apiKey "$LLM_CREDENTIALS" \
+                '{
+                  providers: {
+                    "kimi-coding": {
+                      apiKey: $apiKey,
+                      baseUrl: "https://api.moonshot.cn/v1",
+                      api: "openai-completions",
+                      models: [{
+                        id: "k2p5",
+                        name: "Kimi K2P5",
+                        reasoning: false,
+                        input: ["text"],
+                        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                        contextWindow: 128000,
+                        maxTokens: 4096
+                      }]
+                    }
+                  }
+                }')
+              PRIMARY_MODEL="kimi-coding/k2p5"
+              ;;
+          esac
+        else
+          # No credentials yet - use bootstrap provider for interactive setup
+          MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n '{
+            mode: "merge",
+            providers: {
+              "claw-free": {
+                baseUrl: "http://localhost:3456/v1",
+                apiKey: "local",
+                api: "openai-completions",
+                models: [{
+                  id: "setup",
+                  name: "claw.free Setup",
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 128000,
+                  maxTokens: 4096
+                }]
+              }
+            }
+          }')
+          PRIMARY_MODEL="claw-free/setup"
+        fi
+
         ${pkgs.jq}/bin/jq -n \
           --arg telegramToken "$TELEGRAM_TOKEN" \
           --arg workspace "${workspaceDir}" \
+          --arg primaryModel "$PRIMARY_MODEL" \
+          --argjson models "$MODEL_CONFIG" \
           '{
             gateway: {
               mode: "local"
@@ -174,7 +267,7 @@ in
               defaults: {
                 workspace: $workspace,
                 model: {
-                  primary: "claw-free/setup"
+                  primary: $primaryModel
                 }
               }
             },
@@ -187,32 +280,9 @@ in
                 groupPolicy: "allowlist"
               }
             },
-            models: {
-              mode: "merge",
-              providers: {
-                "claw-free": {
-                  baseUrl: "http://localhost:3456/v1",
-                  apiKey: "local",
-                  api: "openai-completions",
-                  models: [
-                    {
-                      id: "setup",
-                      name: "claw.free Setup",
-                      reasoning: false,
-                      input: ["text"],
-                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                      contextWindow: 128000,
-                      maxTokens: 4096
-                    }
-                  ]
-                }
-              }
-            }
+            models: $models
           }' > "${configPath}"
         chmod 600 "${configPath}"
-
-        printf 'LLM_PROVIDER=%s\n' "$LLM_PROVIDER" > "${providerEnvPath}"
-        chmod 600 "${providerEnvPath}"
 
         touch "${setupMarker}"
         publish_setup_state "ready"
@@ -220,33 +290,11 @@ in
       '';
     };
 
-    systemd.services.claw-free-provider = {
-      description = "claw.free bootstrap LLM provider";
-      wantedBy = [ "multi-user.target" ];
-      requires = [ "openclaw-setup.service" ];
-      after = [ "openclaw-setup.service" "network-online.target" ];
-      wants = [ "network-online.target" ];
-
-      environment = {
-        OPENCLAW_CONFIG_PATH = configPath;
-        PATH = lib.mkForce clawPath;
-      };
-
-      serviceConfig = {
-        Type = "simple";
-        WorkingDirectory = providerDir;
-        ExecStart = "${pkgs.nodejs_22}/bin/node ${providerDir}/server.js";
-        EnvironmentFile = "-${providerEnvPath}";
-        Restart = "on-failure";
-        RestartSec = 5;
-      };
-    };
-
     systemd.services.openclaw-gateway = {
       description = "OpenClaw gateway";
       wantedBy = [ "multi-user.target" ];
-      requires = [ "openclaw-setup.service" "claw-free-provider.service" ];
-      after = [ "openclaw-setup.service" "claw-free-provider.service" "network-online.target" ];
+      requires = [ "openclaw-setup.service" ];
+      after = [ "openclaw-setup.service" "network-online.target" ];
       wants = [ "network-online.target" ];
 
       environment = {
