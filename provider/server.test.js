@@ -121,7 +121,7 @@ function startServer(env = {}) {
       }
     });
 
-    proc.stderr.on("data", (data) => {
+    proc.stderr.on("data", () => {
       // Some startup info may go to stderr
     });
 

@@ -12,7 +12,8 @@
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node dist-server/index.js",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify": "npm run lint && npm test && npm run build"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",

@@ -296,6 +296,25 @@ export async function deleteDeployment(id: string): Promise<void> {
   await pool.query(`DELETE FROM deployment WHERE id = $1`, [id])
 }
 
+// --- Outbound allowlist (per bot IP) ---
+
+export async function getAllowlistedDomainsForIp(ip: string): Promise<string[]> {
+  const result = await pool.query<{ domain: string }>(
+    `SELECT domain FROM bot_allowlist WHERE ip = $1`,
+    [ip],
+  )
+  return result.rows.map((r) => r.domain)
+}
+
+export async function upsertAllowlistDomainForIp(ip: string, domain: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO bot_allowlist (id, ip, domain)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (ip, domain) DO NOTHING`,
+    [crypto.randomUUID(), ip, domain],
+  )
+}
+
 // --- Schema migration ---
 
 export async function ensureSchema(): Promise<void> {
@@ -354,6 +373,14 @@ export async function ensureSchema(): Promise<void> {
       error TEXT,
       created_at TIMESTAMPTZ DEFAULT now(),
       updated_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS bot_allowlist (
+      id UUID PRIMARY KEY,
+      ip TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE(ip, domain)
     );
 
     -- Migrations for existing deployments

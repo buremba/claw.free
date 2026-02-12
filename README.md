@@ -42,6 +42,7 @@ claw.free (web app + API)
 nix develop        # or: npm install
 npm run dev        # process-compose (API: http://localhost:8788, Vite: http://localhost:5365)
 npm run build      # production build in dist/
+npm run verify     # lint + test + build (recommended before opening/merging PRs)
 ```
 
 Environment variables used by the API are listed in `.env.example`.
@@ -82,3 +83,9 @@ skill/                  claw.free management skill for OpenClaw
 flake.nix               Nix flake for dev environment + VM packages
 infra/nixos/base/       NixOS base module + GCP image build for OpenClaw VMs
 ```
+
+## Lockfiles
+
+This repo intentionally has multiple npm lockfiles:
+- root `package-lock.json` for the web app + API
+- `infra/nixos/base/ai-tools/package-lock.json` for the pinned CLI bundle baked into the NixOS image

@@ -531,7 +531,7 @@ I'll detect when you're done automatically. Just send any message after you've a
     return `Welcome to claw.free! Let's set up ${displayName}.
 
 ${getApiKeyFallbackMessage(provider, false)}${stageMarker("api_key_fallback", provider)}`;
-  } catch (err) {
+  } catch {
     // Auth process failed to start — fall back to API key
     state.stage = "api_key_fallback";
     return `${getApiKeyFallbackMessage(provider)}${stageMarker("api_key_fallback", provider)}`;
@@ -563,7 +563,7 @@ async function handleWaitingForCode(userMessage) {
 ${result.url}
 
 After you log in, paste the code here.${stageMarker("waiting_for_code", state.selectedProvider)}`;
-    } catch (err) {
+    } catch {
       state.stage = "api_key_fallback";
       return `${getApiKeyFallbackMessage(state.selectedProvider)}${stageMarker("api_key_fallback", state.selectedProvider)}`;
     }
@@ -596,7 +596,7 @@ ${getApiKeyFallbackMessage(state.selectedProvider)}${stageMarker("api_key_fallba
   }
 }
 
-async function handleWaitingForDeviceAuth(userMessage) {
+async function handleWaitingForDeviceAuth() {
   // Codex polls automatically. Check if auth completed.
   if (state.stage === "auth_complete") {
     return promptAddAnother("openai");
@@ -637,7 +637,7 @@ Go to: ${result.url}
 Enter this code: **${result.code}**
 
 Send another message after you've authorized.${stageMarker("waiting_for_device_auth", "openai")}`;
-    } catch (err) {
+    } catch {
       state.stage = "api_key_fallback";
       return `${getApiKeyFallbackMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
     }

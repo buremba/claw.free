@@ -15,7 +15,7 @@ import { deployExisting } from "./routes/deploy-existing.js"
 import { telegramDetectUser } from "./routes/telegram-detect-user.js"
 import { miniAuth } from "./routes/mini-auth.js"
 import { miniListBots, miniGetBot, miniCreateBot, miniDeleteBot, miniValidateToken } from "./routes/mini-bots.js"
-import { internalAllowlist } from "./routes/internal-allowlist.js"
+import { internalAllowlist, internalAllowlistUpsert } from "./routes/internal-allowlist.js"
 import { relayWebhook, relayStatus } from "./routes/relay.js"
 import { setupRelayWebSocket } from "./lib/relay-ws.js"
 import { rateLimit } from "./lib/rate-limit.js"
@@ -70,6 +70,7 @@ app.post("/api/mini/validate-token", rateLimit(10, 60_000), miniValidateToken)
 
 // --- Internal routes (gateway → API, authenticated via X-Internal-Key) ---
 app.get("/api/internal/allowlist", internalAllowlist)
+app.post("/api/internal/allowlist", internalAllowlistUpsert)
 
 // --- Relay tunnel routes (Railway-native bot VM connectivity) ---
 // WebSocket upgrade handled separately on the HTTP server (see below).

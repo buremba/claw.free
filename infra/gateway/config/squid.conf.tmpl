@@ -4,7 +4,7 @@
 # Default: deny all. Domains are allowed per-bot via external ACL
 # that queries the Railway API for the bot's allowlist.
 #
-# If ALLOWLIST_API_URL is empty, falls back to a static allowlist file.
+# If ALLOWLIST_API_URL is empty, the helper runs in open mode (allows all).
 
 # Listen on overlay network only (Tailscale IP)
 http_port ${PORT_SQUID}
