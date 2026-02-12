@@ -8,6 +8,10 @@ import {
   generateVmName,
   sanitizeBotName,
 } from "../lib/deploy.js"
+import {
+  createBotPreAuthKey,
+  isHeadscaleConfigured,
+} from "../lib/headscale.js"
 
 interface DeployRequest {
   projectId: string
@@ -58,6 +62,16 @@ export async function deployStart(c: Context): Promise<Response> {
     )
   } catch { /* may not exist */ }
 
+  // Generate overlay network pre-auth key (if Headscale is configured)
+  let tailscaleAuthKey: string | undefined
+  if (isHeadscaleConfigured()) {
+    try {
+      tailscaleAuthKey = await createBotPreAuthKey()
+    } catch (err) {
+      console.error("Failed to create overlay pre-auth key:", err)
+    }
+  }
+
   const vmRes = await fetch(
     `https://compute.googleapis.com/compute/v1/projects/${projectId}/zones/${zone}/instances`,
     {
@@ -71,6 +85,8 @@ export async function deployStart(c: Context): Promise<Response> {
           telegramToken,
           botName: normalizedBotName,
           sourceImage,
+          tailscaleAuthKey,
+          headscaleUrl: process.env.HEADSCALE_URL,
         }),
       ),
     },
