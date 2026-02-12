@@ -9,6 +9,8 @@
     "dev:status": "process-compose -U -u .tmp/process-compose.sock list",
     "dev:attach": "process-compose -U -u .tmp/process-compose.sock attach",
     "dev:legacy": "concurrently \"vite\" \"NODE_ENV=development tsx watch server/index.ts\"",
+    "smoke": "bash scripts/smoke.sh",
+    "smoke:prod": "bash scripts/smoke.sh https://claw.free",
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node dist-server/index.js",
     "lint": "eslint .",

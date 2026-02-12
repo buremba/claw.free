@@ -80,6 +80,7 @@ Recommended loop:
 - `npm run dev` for hot reload (Vite + API).
 - point `DATABASE_URL` at a real Postgres instance (Railway Postgres, etc.) so you exercise migrations and DB behavior realistically.
 - use `npm run verify` before pushing (lint + tests + build).
+- use `npm run smoke` (local) or `npm run smoke:prod` (production) for a quick unauthenticated API sanity check.
 
 ## Project structure
 
