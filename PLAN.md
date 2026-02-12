@@ -2,479 +2,311 @@
 
 ## Overview
 
-Build a **multi-tenant Telegram bot** (running on Railway) that serves as the onboarding gateway for claw.free. Users click a Telegram link on the website, interact with the bot to set up their own AI assistant, and the platform handles everything. The system supports **whitelabeling** so resellers can run their own branded version with their own master bot.
+Deploy an **OpenClaw instance** on Railway as the master onboarding bot. It's just OpenClaw configured with a system prompt and skills that guide users through setting up their own bot. No custom bot framework needed - we dogfood our own product.
 
 ---
 
 ## Architecture
 
-### Two Deployment Modes
-
-The system supports two modes based on environment configuration:
-
-**Mode A: Platform-Provided GCP (recommended for most users)**
-- `GCP_SERVICE_ACCOUNT_KEY` is set in env
-- Platform owns the GCP project and deploys VMs on behalf of users
-- Google OAuth only requests basic scopes (`openid`, `email`) for identity
-- Users don't need a GCP account at all
-- Simpler, faster onboarding
-
-**Mode B: Bring-Your-Own-GCP (power users / current flow)**
-- `GCP_SERVICE_ACCOUNT_KEY` is NOT set
-- Google OAuth requests full GCP scopes (compute, service management)
-- User selects their own GCP project
-- VM deployed to user's own account (existing behavior)
-
-### Three-Tier Model
-
 ```
-Tier 1: claw.free Platform (Railway)
-  ├── Multi-tenant Master Bot (single process, handles all users)
-  ├── Web API (existing Hono server, extended)
-  ├── PostgreSQL (extended schema)
-  └── Platform GCP project (optional, for Mode A deployments)
+Railway (our infra)
+├── OpenClaw Gateway (Telegram bot, uses our TELEGRAM_BOT_TOKEN)
+├── Hono API Server (existing, extended with deploy endpoints)
+├── PostgreSQL (session + deployment tracking)
+└── Platform GCP Service Account (optional, for deploying user VMs)
 
-Tier 2: Reseller (whitelabel)
-  ├── Their own Master Bot token (routed through our Railway service)
-  ├── Their own branded website (subdomain or custom domain)
-  ├── Their own GCP service account (optional, or uses platform's)
-  └── Their config (branding, AI provider defaults, limits)
-
-Tier 3: End User
-  ├── Their own Telegram bot (deployed to GCP free tier)
-  ├── OpenClaw + AI provider (existing flow)
-  └── Sandboxed: read-only FS, restricted network
+User's GCP (or platform's)
+└── Per-user OpenClaw VM (existing flow, sandboxed)
 ```
 
-### How It Works (End-to-End Flow)
+The master bot is literally OpenClaw talking to users via Telegram, with a skill that can:
+- Validate Telegram bot tokens
+- Trigger GCP deployments via the Hono API
+- Send the first message via the user's new bot
+- Track deployment status
 
-**Mode A (Platform GCP) - The primary flow:**
-```
-1. User visits claw.free website → sees "Set up your AI bot" with Telegram link
-2. User clicks t.me/ClawFreeBot → opens Telegram → sends /start
-3. Master bot greets: "I'll help you set up your own AI assistant!"
-4. Bot asks: "Which AI provider?" → inline buttons: Claude / ChatGPT / Kimi
-5. Bot asks: "Create a bot on @BotFather and send me the token"
-6. User pastes token → bot validates via Telegram API (getMe call)
-7. Bot sends inline button: "Login with Google" (basic OAuth, just identity)
-8. User clicks → browser → Google login (email only) → redirect back
-9. Bot detects OAuth complete → "Great, {name}! Deploying your bot..."
-10. Bot deploys VM to platform's GCP project using service account
-11. Bot edits status message as deployment progresses
-12. Once live, user's NEW BOT sends them: "Hi! I'm ready. Let's connect your AI provider..."
-13. Master bot confirms: "Your bot @YourBotName is live! Go talk to it."
-```
+---
 
-**Mode B (User's GCP) - Fallback / power-user flow:**
+## How It Works
+
 ```
-Steps 1-6: Same as above
-7. Bot sends inline button: "Login with Google" (full GCP scopes)
-8. User clicks → browser → Google login + GCP permissions → redirect back
-9. Bot detects OAuth → asks for GCP project selection (inline buttons)
-10. Bot runs preflight → deploys to user's GCP project
-11-13: Same as above
+1. User visits website → clicks "Open in Telegram" → t.me/ClawFreeBot
+2. User sends /start
+3. OpenClaw (with onboarding system prompt) greets them, explains the service
+4. AI asks: "Which AI provider do you want? Claude, ChatGPT, or Kimi?"
+5. AI asks: "Create a bot on @BotFather and send me the token"
+6. User pastes token → skill script validates via Telegram getMe API
+7. AI sends Google OAuth link (inline button or URL)
+8. User logs in → callback marks bridge state complete
+9. AI detects auth complete → triggers deployment via API
+10. AI updates user on progress as VM boots
+11. Once live → skill sends first message from user's new bot
+12. AI confirms: "Your bot @YourBotName is live! Go talk to it."
 ```
 
 ---
 
-## Environment Variables
+## What We Need
 
-```env
-# Required
-TELEGRAM_BOT_TOKEN=            # The master bot's Telegram token
-DATABASE_URL=                  # PostgreSQL connection string
-GOOGLE_CLIENT_ID=              # Google OAuth app client ID
-GOOGLE_CLIENT_SECRET=          # Google OAuth app secret
-BASE_URL=                      # Public URL (e.g., https://claw.free.railway.app)
-COOKIE_SECRET=                 # HMAC secret for cookie signing
+### 1. OpenClaw Config for the Master Bot
 
-# Optional - enables Mode A (platform-provided GCP)
-GCP_SERVICE_ACCOUNT_KEY=       # JSON key for platform's GCP service account
-GCP_PROJECT_ID=                # Platform's GCP project for deploying user VMs
-```
-
-When `GCP_SERVICE_ACCOUNT_KEY` is set:
-- OAuth scopes: `openid email` only
-- Deployment uses platform service account
-- No GCP project selection step in bot conversation
-- VM naming: `{botname}-{userid}-{random}` under platform project
-
-When `GCP_SERVICE_ACCOUNT_KEY` is NOT set:
-- OAuth scopes: `openid email compute service.management cloudplatformprojects.readonly`
-- User must select/create their own GCP project
-- Existing deploy flow behavior
-
----
-
-## Implementation Steps
-
-### Phase 1: Master Bot Core (Telegram Bot on Railway)
-
-#### 1.1 New `bot/` directory structure
-
-```
-bot/
-├── index.ts                  # Bot initialization, webhook handler registration
-├── bot.ts                    # grammY bot instance + middleware stack
-├── conversations/
-│   ├── onboarding.ts         # Main onboarding state machine
-│   └── manage.ts             # /mybots - manage existing deployments
-├── services/
-│   ├── token-validator.ts    # Validate Telegram bot tokens via getMe
-│   ├── oauth-bridge.ts       # Generate OAuth links, poll for completion
-│   ├── deployer.ts           # Orchestrate GCP deployment (both modes)
-│   └── bot-instructor.ts     # Send first message via user's new bot
-├── middleware/
-│   ├── session.ts            # Per-user conversation state (PostgreSQL)
-│   └── whitelabel.ts         # Resolve reseller context from bot token
-└── types.ts                  # Shared types
-```
-
-#### 1.2 Bot Framework: grammY
-
-**[grammY](https://grammy.dev/)** - TypeScript-first Telegram bot framework.
-- Built-in conversation plugin for multi-step flows
-- Session middleware with PostgreSQL storage adapter
-- Webhook and long-polling support
-- Inline keyboard builders
-- Excellent TypeScript types
-
-#### 1.3 Conversation State Machine
-
-```
-IDLE
-  → PROVIDER_SELECT         (inline buttons: Claude / ChatGPT / Kimi)
-  → TOKEN_INPUT             ("Paste your @BotFather token")
-  → TOKEN_VALIDATED         (bot validates token via getMe)
-  → OAUTH_PENDING           (inline button: "Login with Google")
-  → OAUTH_COMPLETE          (bot detects OAuth callback)
-  → PROJECT_SELECT          (Mode B only: pick GCP project)
-  → DEPLOYING               (bot edits status message with progress)
-  → INSTRUCTING             (user's new bot sends first message)
-  → COMPLETE                ("Your bot is live!")
-```
-
-Session state persisted in PostgreSQL - survives Railway restarts.
-
-#### 1.4 Hosting: Webhook on existing Hono server
-
-Integrate into the existing Hono server as a webhook endpoint rather than a separate process:
-- `POST /bot/webhook/:secret` - grammY webhook handler
-- Shares DB connection, deploy logic, auth infrastructure
-- No extra Railway service needed
-- Set webhook via `bot.api.setWebhook(BASE_URL + '/bot/webhook/' + secret)`
-
-### Phase 2: OAuth Bridge (Telegram <> Web)
-
-#### 2.1 The Problem
-
-Telegram bots can't do OAuth. User must open a browser, log in, and the bot needs to detect completion.
-
-#### 2.2 Solution
-
-1. Bot generates a unique `state` token, stores in `oauth_bridge_state` table with `telegram_chat_id`
-2. Bot sends inline button: **"Login with Google"** → URL: `{BASE_URL}/api/auth/google?bridge_state={token}`
-3. Server detects `bridge_state` param → adjusts OAuth scopes based on deployment mode:
-   - **Mode A** (GCP_SERVICE_ACCOUNT_KEY set): `openid email`
-   - **Mode B** (no service account): full GCP scopes
-4. After OAuth callback → server marks `bridge_state` as complete in DB, stores user ID + tokens
-5. Bot polls `oauth_bridge_state` table every 2s (up to 10 minutes) until completed
-6. Bot resumes conversation with the authenticated user context
-
-#### 2.3 Database Table
-
-```sql
-CREATE TABLE oauth_bridge_state (
-  state TEXT PRIMARY KEY,
-  telegram_chat_id BIGINT NOT NULL,
-  telegram_user_id BIGINT NOT NULL,
-  reseller_id UUID REFERENCES reseller(id),
-  user_id UUID,                          -- Set after OAuth completes
-  access_token TEXT,                     -- Set after OAuth completes (Mode B only)
-  completed BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  expires_at TIMESTAMPTZ DEFAULT (now() + interval '10 minutes')
-);
-```
-
-#### 2.4 Modified Auth Flow
-
-- `server/routes/auth-google.ts`: If `bridge_state` param present, store it in session/cookie, adjust scopes based on mode
-- `server/routes/auth-callback-google.ts`: If `bridge_state` in session, update `oauth_bridge_state` row with user info, mark `completed = true`, show "You can close this tab" page
-
-### Phase 3: Deployment Integration
-
-#### 3.1 Refactor Deploy Logic into Shared Services
-
-Extract core logic from route handlers into reusable services:
-
-```
-server/services/
-├── deploy.ts          # createVM(), getDeploymentStatus() - core GCP Compute API calls
-├── gcp-projects.ts    # listProjects(), createProject() - project management
-└── preflight.ts       # checkProjectReady() - API enablement, permissions
-```
-
-Route handlers become thin wrappers. Bot calls services directly.
-
-#### 3.2 Mode A Deployment (Platform GCP)
-
-When `GCP_SERVICE_ACCOUNT_KEY` is set:
-- Use service account credentials instead of user's OAuth token
-- Deploy to `GCP_PROJECT_ID` (platform's project)
-- VM name: `bot-{sanitized-username}-{short-random}`
-- Region: auto-select based on user's timezone (from Telegram language_code or default us-central1)
-- Skip project selection and preflight (platform project is pre-configured)
-
-#### 3.3 Mode B Deployment (User's GCP)
-
-Existing flow, driven through bot conversation instead of web UI:
-- Bot lists user's projects as inline buttons (max 8, with "type manually" option)
-- Bot runs preflight, reports issues as messages
-- Bot triggers deployment, polls status
-
-#### 3.4 Progress Messages
-
-Bot edits a single "status" message:
-```
-"⏳ Deploying your bot... Creating VM"
-"⏳ Deploying your bot... Booting up"
-"⏳ Deploying your bot... Installing AI tools"
-"⏳ Deploying your bot... Starting services"
-"✅ Your bot @YourBot is live! Go talk to it →"
-```
-
-### Phase 4: Bot Instruction (First Message)
-
-Once the user's VM is ready:
-
-1. Master bot uses the user's bot token to call Telegram `sendMessage` API
-2. Sends to the user's Telegram ID (known from the master bot conversation)
-3. Message: "Hi! I'm your AI assistant. Send /start to begin setup."
-4. This triggers the existing bootstrap provider flow on the VM
-
-```typescript
-async function instructNewBot(botToken: string, telegramUserId: number) {
-  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: telegramUserId,
-      text: "Hi! I'm your new AI assistant. Send /start to connect your AI provider and start chatting!"
-    })
-  });
+```json
+{
+  "gateway": { "mode": "local" },
+  "agents": {
+    "defaults": {
+      "workspace": "/app/workspace",
+      "systemPrompt": "You are the claw.free onboarding assistant...",
+      "model": { "primary": "anthropic/claude-sonnet-4-20250514" }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "dmPolicy": "open",
+      "allowFrom": ["*"]
+    }
+  },
+  "models": {
+    "providers": {
+      "anthropic": {
+        "apiKey": "${ANTHROPIC_API_KEY}"
+      }
+    }
+  }
 }
 ```
 
-### Phase 5: Sandbox Hardening (Security)
+### 2. Onboarding Skill
 
-#### 5.1 Read-Only Filesystem
-
-Modify `infra/nixos/base/default.nix`:
-- Root filesystem mounted read-only
-- Writable mounts: `/var/lib/openclaw` (workspace), `/tmp` (tmpfs), `/var/log` (logs)
-- No package installation possible at runtime
-
-#### 5.2 Restricted Network (Outbound Allowlist)
-
-```nix
-networking.firewall = {
-  enable = true;
-  allowedTCPPorts = [];  # No inbound
-
-  extraCommands = ''
-    # AI Provider APIs
-    iptables -A OUTPUT -d api.anthropic.com -p tcp --dport 443 -j ACCEPT
-    iptables -A OUTPUT -d api.openai.com -p tcp --dport 443 -j ACCEPT
-    iptables -A OUTPUT -d api.moonshot.cn -p tcp --dport 443 -j ACCEPT
-    # Telegram API
-    iptables -A OUTPUT -d api.telegram.org -p tcp --dport 443 -j ACCEPT
-    # GCP metadata (for guest attributes / status reporting)
-    iptables -A OUTPUT -d metadata.google.internal -j ACCEPT
-    # DNS (needed to resolve the above)
-    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-    iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
-    # Loopback
-    iptables -A OUTPUT -o lo -j ACCEPT
-    # Block everything else
-    iptables -A OUTPUT -j DROP
-  '';
-};
-```
-
-### Phase 6: Whitelabel System
-
-#### 6.1 Database Schema
-
-```sql
-CREATE TABLE reseller (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT NOT NULL,                    -- "Acme AI"
-  slug TEXT UNIQUE NOT NULL,             -- "acme-ai"
-  master_bot_token TEXT NOT NULL,        -- Their master bot's Telegram token
-  webhook_secret TEXT NOT NULL,          -- Unique secret for webhook URL
-  website_domain TEXT,                   -- "ai.acme.com" (optional)
-  branding JSONB DEFAULT '{}',          -- { logo, colors, welcome_text, bot_greeting }
-  default_provider TEXT DEFAULT 'claude',
-  max_deployments INT DEFAULT 100,
-  owner_user_id UUID REFERENCES "user"(id),
-
-  -- Optional: reseller brings their own GCP
-  gcp_service_account_key TEXT,          -- Their own GCP SA key (overrides platform's)
-  gcp_project_id TEXT,                   -- Their own GCP project
-
-  -- Optional: reseller brings their own Google OAuth app
-  google_client_id TEXT,
-  google_client_secret TEXT,
-
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE deployment (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  reseller_id UUID REFERENCES reseller(id),  -- NULL = platform direct
-  user_id UUID REFERENCES "user"(id),
-  telegram_user_id BIGINT NOT NULL,
-  bot_token_encrypted TEXT NOT NULL,     -- Encrypted bot token
-  bot_username TEXT,
-  gcp_project_id TEXT NOT NULL,
-  gcp_zone TEXT NOT NULL,
-  vm_name TEXT NOT NULL,
-  status TEXT DEFAULT 'pending',         -- pending, deploying, active, stopped, error
-  provider TEXT NOT NULL,                -- claude, openai, kimi
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-```
-
-#### 6.2 Multi-Bot Webhook Routing
-
-Each reseller's master bot gets a unique webhook URL:
+A skill with shell tools that the AI can invoke during conversation:
 
 ```
-POST /bot/webhook/:webhookSecret
+skill/onboarding/
+├── SKILL.md              # System prompt + tool descriptions
+└── scripts/
+    ├── validate-token.sh     # Telegram getMe API call
+    ├── create-oauth-link.sh  # Generate OAuth bridge URL
+    ├── check-oauth.sh        # Poll bridge state completion
+    ├── deploy-bot.sh         # Call Hono API to create VM
+    ├── deploy-status.sh      # Poll deployment progress
+    └── send-first-message.sh # Send message via user's new bot
 ```
 
-Middleware resolves `webhookSecret` → reseller context → correct bot instance:
+**SKILL.md:**
+```markdown
+---
+name: claw.free-onboarding
+description: Help users set up their own AI Telegram bot
+tools:
+  - shell
+---
 
-```typescript
-// Lookup: webhookSecret → reseller → bot token
-// Default (no reseller match) → platform's own master bot
-// Each reseller's bot is a separate grammY Bot instance, lazily initialized
+You are the claw.free setup assistant. Guide users through creating
+their own AI-powered Telegram bot.
+
+## Steps
+
+1. Ask which AI provider they want (Claude, ChatGPT, or Kimi)
+2. Ask them to create a bot via @BotFather and paste the token
+3. Validate the token: `bash scripts/validate-token.sh <token>`
+4. Generate OAuth link: `bash scripts/create-oauth-link.sh <chat_id>`
+5. Send the link and wait for auth: `bash scripts/check-oauth.sh <state>`
+6. Deploy their bot: `bash scripts/deploy-bot.sh <token> <provider> <user_id> <project_id>`
+7. Check progress: `bash scripts/deploy-status.sh <deployment_id>`
+8. Send first message: `bash scripts/send-first-message.sh <bot_token> <user_telegram_id>`
+
+## Important
+- Always validate the bot token before proceeding
+- If OAuth times out (10 min), offer to generate a new link
+- Show deployment progress updates to the user
+- After deployment, confirm the user's bot is responding
 ```
 
-On startup: register webhooks for platform bot + all active resellers.
-On reseller creation: register webhook for new bot.
+### 3. Skill Scripts
 
-#### 6.3 Whitelabel Website
-
-**Phase 1**: Resellers get a subdomain: `acme.claw.free`
-- Same React app, branding loaded from `GET /api/branding/:slug`
-- Returns: name, logo URL, colors, Telegram bot link, custom welcome text
-
-**Phase 2 (later)**: Custom domains via CNAME + Cloudflare for SaaS
-
-#### 6.4 Website Changes
-
-The main claw.free website gets a prominent Telegram bot link:
-- Hero section: "Set up your AI assistant in 2 minutes" + **"Open in Telegram"** button
-- Button links to `t.me/{botUsername}?start=web` (deep link with referral tracking)
-- Existing wizard flow remains available as an alternative path
-
-### Phase 7: Reseller Onboarding
-
-#### 7.1 Flow
-
-1. User signs up on claw.free (existing Google OAuth)
-2. Navigates to `/reseller/setup`
-3. Creates a master bot via @BotFather, pastes token
-4. Configures branding (name, welcome message, default provider)
-5. Gets webhook URL to set on their bot
-6. Optionally provides their own GCP service account key
-7. Gets their Telegram bot link + optional website subdomain
-
-#### 7.2 Dashboard Routes
-
+**validate-token.sh** - Validates a Telegram bot token:
+```bash
+#!/bin/bash
+TOKEN="$1"
+RESULT=$(curl -s "https://api.telegram.org/bot${TOKEN}/getMe")
+echo "$RESULT"
+# Returns bot username + id if valid, error if not
 ```
-/reseller/dashboard      - Active bots count, recent deployments
-/reseller/settings       - Bot token, branding, GCP config
-/reseller/deployments    - List/manage end-user deployments
+
+**create-oauth-link.sh** - Creates an OAuth bridge state and returns the login URL:
+```bash
+#!/bin/bash
+CHAT_ID="$1"
+RESULT=$(curl -s -X POST "${BASE_URL}/api/auth/telegram-bridge" \
+  -H "Content-Type: application/json" \
+  -d "{\"telegram_chat_id\": ${CHAT_ID}}")
+echo "$RESULT"
+# Returns { state: "abc123", url: "https://..." }
 ```
+
+**check-oauth.sh** - Checks if OAuth bridge completed:
+```bash
+#!/bin/bash
+STATE="$1"
+RESULT=$(curl -s "${BASE_URL}/api/auth/telegram-bridge/${STATE}")
+echo "$RESULT"
+# Returns { completed: true/false, user_email: "..." }
+```
+
+**deploy-bot.sh** - Triggers VM deployment:
+```bash
+#!/bin/bash
+TOKEN="$1" PROVIDER="$2" USER_ID="$3"
+RESULT=$(curl -s -X POST "${BASE_URL}/api/deploy/start" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Key: ${INTERNAL_API_KEY}" \
+  -d "{\"botToken\": \"${TOKEN}\", \"provider\": \"${PROVIDER}\", \"userId\": \"${USER_ID}\"}")
+echo "$RESULT"
+```
+
+**deploy-status.sh** - Polls deployment status:
+```bash
+#!/bin/bash
+DEPLOYMENT_ID="$1"
+RESULT=$(curl -s "${BASE_URL}/api/deploy/${DEPLOYMENT_ID}")
+echo "$RESULT"
+```
+
+**send-first-message.sh** - Sends first message from user's new bot:
+```bash
+#!/bin/bash
+BOT_TOKEN="$1" USER_ID="$2"
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+  -H "Content-Type: application/json" \
+  -d "{\"chat_id\": ${USER_ID}, \"text\": \"Hi! I'm your new AI assistant. Send /start to begin setup!\"}"
+```
+
+### 4. Server-Side Changes (Hono API)
+
+Minimal additions to the existing server:
+
+**New endpoints:**
+- `POST /api/auth/telegram-bridge` - Create OAuth bridge state (generates state token, returns login URL)
+- `GET /api/auth/telegram-bridge/:state` - Check bridge completion status
+- Modify `auth-callback-google.ts` - If bridge_state present, mark complete + show "close tab" page
+
+**Modified `auth-google.ts`:**
+- If `bridge_state` param exists, adjust scopes:
+  - `GCP_SERVICE_ACCOUNT_KEY` set → `openid email` only
+  - Not set → full GCP scopes (existing behavior)
+
+**New `POST /api/deploy/start` for bot-driven deploys:**
+- Accept internal API key auth (not cookie-based, since called from skill scripts)
+- Mode A: use platform service account + project
+- Mode B: use user's OAuth token from bridge state
+
+### 5. Environment Variables
+
+```env
+# Required
+TELEGRAM_BOT_TOKEN=        # Master bot's Telegram token
+ANTHROPIC_API_KEY=         # AI model for the onboarding conversation
+DATABASE_URL=              # PostgreSQL
+GOOGLE_CLIENT_ID=          # OAuth
+GOOGLE_CLIENT_SECRET=      # OAuth
+BASE_URL=                  # Public URL
+INTERNAL_API_KEY=          # For skill scripts → API auth
+
+# Optional - Mode A (platform-provided GCP)
+GCP_SERVICE_ACCOUNT_KEY=   # Platform GCP service account JSON
+GCP_PROJECT_ID=            # Platform GCP project
+```
+
+### 6. Deployment on Railway
+
+The master bot runs as an OpenClaw gateway process alongside the existing Hono server:
+
+```json
+// railway.json - start both processes
+{
+  "deploy": {
+    "startCommand": "npm run start & openclaw gateway --port 18789",
+    "healthcheckPath": "/healthz"
+  }
+}
+```
+
+Or use process-compose (already in the project for local dev) to run both.
+
+### 7. Sandbox Hardening (Deployed User VMs)
+
+**Read-only filesystem** - NixOS config:
+- Root mounted read-only
+- Only `/var/lib/openclaw`, `/tmp`, `/var/log` writable
+
+**Network allowlist** - iptables in NixOS config:
+- Allow: api.anthropic.com, api.openai.com, api.moonshot.cn, api.telegram.org, metadata.google.internal
+- Allow: DNS (udp/tcp 53), loopback
+- Block: everything else
+
+### 8. Website Changes
+
+Replace the complex wizard with a simple landing page:
+- Hero: "Get your own AI assistant in 2 minutes"
+- Primary CTA: **"Open in Telegram"** → `t.me/{botUsername}?start=web`
+- Secondary: existing wizard flow for power users
 
 ---
 
-## File Changes Summary
+## Whitelabel (Phase 2)
 
-### New Files
-```
-bot/
-├── index.ts                      # Bot init, webhook registration
-├── bot.ts                        # grammY instance + middleware
-├── conversations/onboarding.ts   # Onboarding state machine
-├── conversations/manage.ts       # /mybots command
-├── services/token-validator.ts   # Validate Telegram tokens
-├── services/oauth-bridge.ts      # OAuth bridge logic
-├── services/deployer.ts          # Deploy orchestration (both modes)
-├── services/bot-instructor.ts    # First message via user's bot
-├── middleware/session.ts         # PostgreSQL session storage
-├── middleware/whitelabel.ts      # Reseller context resolution
-└── types.ts                      # Types
+Each reseller deploys their own OpenClaw master bot instance with:
+- Their own `TELEGRAM_BOT_TOKEN`
+- Their own branding in the system prompt
+- Their own `GCP_SERVICE_ACCOUNT_KEY` (optional)
+- Shared or separate Hono API backend
 
-server/services/
-├── deploy.ts                     # Extracted deploy logic
-├── gcp-projects.ts               # Extracted project management
-└── preflight.ts                  # Extracted preflight checks
-
-server/routes/
-├── bot-webhook.ts                # Webhook endpoint for Hono
-└── reseller.ts                   # Reseller CRUD API
-
-src/routes/reseller/
-├── dashboard.tsx                 # Reseller dashboard
-└── settings.tsx                  # Reseller settings
+Reseller config stored in DB:
+```sql
+CREATE TABLE reseller (
+  id UUID PRIMARY KEY,
+  slug TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  master_bot_token TEXT NOT NULL,
+  system_prompt_override TEXT,       -- Custom greeting/branding
+  gcp_service_account_key TEXT,      -- Their own GCP (optional)
+  gcp_project_id TEXT,
+  default_provider TEXT DEFAULT 'claude',
+  max_deployments INT DEFAULT 100,
+  owner_user_id UUID REFERENCES "user"(id),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
 ```
 
-### Modified Files
-```
-server/index.ts                   # Register webhook + reseller routes
-server/db.ts                      # New tables (reseller, deployment, oauth_bridge_state)
-server/routes/auth-google.ts      # bridge_state param, dynamic scopes
-server/routes/auth-callback-google.ts  # Bridge completion, "close tab" page
-infra/nixos/base/default.nix      # Read-only FS + network allowlist
-startup-script.sh                 # Sandbox restrictions
-package.json                      # Add grammY
-src/routes/index.tsx              # Telegram bot link on homepage
-```
+Multi-tenant routing: each reseller's bot gets a separate OpenClaw gateway process or a single gateway with multi-bot support (depending on OpenClaw's capabilities).
 
 ---
 
 ## Implementation Order
 
-| Phase | Description | Effort |
-|-------|-------------|--------|
-| **1** | Master bot core (grammY + webhook on Hono) | Foundation |
-| **2** | OAuth bridge (Telegram ↔ Google login, both modes) | Core |
-| **3** | Onboarding conversation (full state machine) | Core |
-| **4** | Deploy integration (refactor + bot-driven, Mode A first) | Core |
-| **5** | Bot instruction (first message from user's new bot) | Small |
-| **6** | Sandbox hardening (read-only FS, network allowlist) | Independent |
-| **7** | Whitelabel (multi-bot routing, reseller DB, branding) | Extension |
-| **8** | Reseller dashboard + onboarding | Extension |
-| **9** | Website update (Telegram link as primary CTA) | Small |
+| # | What | Description |
+|---|------|-------------|
+| 1 | OpenClaw on Railway | Get openclaw gateway running on Railway with our bot token |
+| 2 | Onboarding skill | SKILL.md + scripts that guide users through setup |
+| 3 | OAuth bridge | 2 new API endpoints for Telegram ↔ Google login |
+| 4 | Deploy from skill | Extend deploy API with internal auth, Mode A support |
+| 5 | Bot instruction | Script that sends first message via user's new bot |
+| 6 | Sandbox hardening | Read-only FS + network allowlist on user VMs |
+| 7 | Website update | Landing page with Telegram link as primary CTA |
+| 8 | Whitelabel | Reseller DB + multi-tenant master bots |
 
-**Start with Phases 1-5** to get a working end-to-end flow. Then Phase 6 for security. Then 7-9 for whitelabel.
+**Phase 1 (MVP): Steps 1-5** - Working end-to-end onboarding via Telegram.
+**Phase 2: Steps 6-7** - Security + website.
+**Phase 3: Step 8** - Whitelabel for resellers.
 
 ---
 
-## Key Design Decisions
+## Why This Approach
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Bot framework | grammY | TypeScript-first, conversation plugin, active maintenance |
-| Hosting mode | Webhook on existing Hono | Single process, shared DB, no extra Railway service |
-| OAuth bridge | State token + DB polling | Simple, reliable, no websocket complexity |
-| Default deploy mode | Platform GCP (Mode A) | Lowest friction for end users, one env var to enable |
-| Token storage | Encrypted in DB | Bot tokens are sensitive, must not leak |
-| Whitelabel routing | Webhook secret per reseller | Each bot gets unique URL, no token in URL |
-| Website primary CTA | Telegram deep link | Bot-first experience, website becomes landing page |
+- **Dogfooding**: The master bot IS OpenClaw. If it's good enough to onboard users, it proves the product works.
+- **No new frameworks**: No grammY, no custom bot code. Just OpenClaw + a skill + shell scripts.
+- **AI-driven conversation**: Real AI (Claude) handles the conversation, not a rigid state machine. It can handle edge cases, answer questions, recover from errors naturally.
+- **Minimal new code**: ~6 small shell scripts, 2 API endpoints, 1 skill definition. The rest is config.
+- **Same deployment model**: Master bot uses the same OpenClaw that end users get. If we improve OpenClaw, the master bot improves too.
