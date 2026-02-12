@@ -14,6 +14,8 @@ import {
   sanitizeBotName,
 } from "../lib/deploy.js"
 
+const MAX_BOT_NAME_LENGTH = 255
+
 export async function miniListBots(c: Context): Promise<Response> {
   const auth = getMiniAuth(c)
   if (!auth) return c.json({ error: "Unauthorized" }, 401)
@@ -23,7 +25,6 @@ export async function miniListBots(c: Context): Promise<Response> {
     bots: deployments.map((d) => ({
       id: d.id,
       botUsername: d.botUsername,
-      llmProvider: d.llmProvider,
       status: d.status,
       vmIp: d.vmIp,
       error: d.error,
@@ -44,7 +45,6 @@ export async function miniGetBot(c: Context): Promise<Response> {
   return c.json({
     id: deployment.id,
     botUsername: deployment.botUsername,
-    llmProvider: deployment.llmProvider,
     status: deployment.status,
     vmIp: deployment.vmIp,
     vmName: deployment.vmName,
@@ -55,8 +55,6 @@ export async function miniGetBot(c: Context): Promise<Response> {
 
 interface CreateBotRequest {
   botToken: string
-  llmProvider: string
-  llmCredentials?: string
   botName?: string
 }
 
@@ -65,18 +63,14 @@ export async function miniCreateBot(c: Context): Promise<Response> {
   if (!auth) return c.json({ error: "Unauthorized" }, 401)
 
   const body = (await c.req.json()) as CreateBotRequest
-  const { botToken, llmProvider, llmCredentials, botName } = body
+  const { botToken, botName } = body
 
-  if (!botToken || !llmProvider) {
-    return c.json({ error: "Missing required fields" }, 400)
+  if (!botToken) {
+    return c.json({ error: "Missing bot token" }, 400)
   }
 
   if (!isValidBotToken(botToken)) {
     return c.json({ error: "Invalid bot token format" }, 400)
-  }
-
-  if (!["claude", "openai", "kimi"].includes(llmProvider)) {
-    return c.json({ error: "Invalid LLM provider" }, 400)
   }
 
   // Validate bot token with Telegram
@@ -92,7 +86,11 @@ export async function miniCreateBot(c: Context): Promise<Response> {
     return c.json({ error: "Platform deployment not configured" }, 500)
   }
 
-  const normalizedBotName = sanitizeBotName(botName ?? botInfo.username ?? "openclaw-bot")
+  const botNameRaw = botName ?? botInfo.username ?? "openclaw-bot"
+  if (botNameRaw.length > MAX_BOT_NAME_LENGTH) {
+    return c.json({ error: "Bot name too long" }, 400)
+  }
+  const normalizedBotName = sanitizeBotName(botNameRaw)
   const vmName = generateVmName(normalizedBotName)
   const deploymentId = crypto.randomUUID()
   const zone = "us-central1-a"
@@ -112,17 +110,11 @@ export async function miniCreateBot(c: Context): Promise<Response> {
   const instanceBody = buildInstanceRequestBody({
     zone,
     vmName,
-    provider: llmProvider,
+    provider: "claude",
     telegramToken: botToken,
     botName: normalizedBotName,
     sourceImage,
   })
-
-  // Add LLM credentials to metadata if provided
-  if (llmCredentials) {
-    const metadata = (instanceBody as { metadata: { items: { key: string; value: string }[] } }).metadata
-    metadata.items.push({ key: "LLM_CREDENTIALS", value: llmCredentials })
-  }
 
   const vmRes = await fetch(
     `https://compute.googleapis.com/compute/v1/projects/${gcpProject}/zones/${zone}/instances`,
@@ -139,10 +131,7 @@ export async function miniCreateBot(c: Context): Promise<Response> {
   await createDeployment({
     id: deploymentId,
     userId: auth.userId,
-    botToken,
     botUsername: botInfo.username,
-    llmProvider,
-    llmCredentials: llmCredentials ?? null,
     projectId: gcpProject,
     vmName,
     vmZone: zone,

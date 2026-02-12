@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-type Step = "token" | "provider" | "credentials" | "deploy" | "done"
+type Step = "token" | "deploy" | "done"
 
 interface BotInfo {
   id: number
@@ -19,13 +19,11 @@ function CreateBot() {
   const [step, setStep] = useState<Step>("token")
   const [botToken, setBotToken] = useState("")
   const [botInfo, setBotInfo] = useState<BotInfo | null>(null)
-  const [provider, setProvider] = useState("claude")
-  const [llmKey, setLlmKey] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [deployStatus, setDeployStatus] = useState("")
 
-  async function validateToken() {
+  async function validateAndDeploy() {
     setLoading(true)
     setError(null)
     try {
@@ -36,42 +34,32 @@ function CreateBot() {
       const data = await res.json()
       if (data.error) {
         setError(data.error)
-      } else {
-        setBotInfo(data.bot)
-        setStep("provider")
+        setLoading(false)
+        return
       }
-    } catch {
-      setError("Validation failed")
-    } finally {
-      setLoading(false)
-    }
-  }
+      setBotInfo(data.bot)
+      setStep("deploy")
 
-  async function deploy() {
-    setLoading(true)
-    setError(null)
-    setStep("deploy")
-    try {
-      const res = await miniApiFetch(token, "/api/mini/bots", {
+      // Immediately start deployment
+      const deployRes = await miniApiFetch(token, "/api/mini/bots", {
         method: "POST",
         body: JSON.stringify({
           botToken,
-          llmProvider: provider,
-          llmCredentials: llmKey || undefined,
-          botName: botInfo?.username,
+          botName: data.bot.username,
         }),
       })
-      const data = await res.json()
-      if (data.error) {
-        setError(data.error)
-        setStep("credentials")
+      const deployData = await deployRes.json()
+      if (deployData.error) {
+        setError(deployData.error)
+        setStep("token")
+        setLoading(false)
         return
       }
-      pollDeployStatus(data.deploymentId)
+      setLoading(false)
+      pollDeployStatus(deployData.deploymentId)
     } catch {
       setError("Deployment failed")
-      setStep("credentials")
-    } finally {
+      setStep("token")
       setLoading(false)
     }
   }
@@ -102,7 +90,7 @@ function CreateBot() {
       {step === "token" && (
         <div className="space-y-4">
           <div className="rounded-lg border p-4 space-y-2">
-            <p className="text-sm font-medium">Step 1: Create your bot</p>
+            <p className="text-sm font-medium">Get started</p>
             <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
               <li>Open <strong>@BotFather</strong> in Telegram</li>
               <li>Send <code>/newbot</code></li>
@@ -121,65 +109,12 @@ function CreateBot() {
             />
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button onClick={validateToken} disabled={!botToken || loading} className="w-full">
-            {loading ? "Validating..." : "Validate Token"}
+          <Button onClick={validateAndDeploy} disabled={!botToken || loading} className="w-full">
+            {loading ? "Setting up..." : "Create Bot"}
           </Button>
-        </div>
-      )}
-
-      {step === "provider" && botInfo && (
-        <div className="space-y-4">
-          <div className="rounded-lg border p-4">
-            <p className="text-sm text-muted-foreground">Bot verified</p>
-            <p className="font-medium">@{botInfo.username}</p>
-          </div>
-          <div className="space-y-2">
-            <Label>AI Provider</Label>
-            <div className="grid grid-cols-3 gap-2">
-              {(["claude", "openai", "kimi"] as const).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setProvider(p)}
-                  className={`rounded-lg border p-3 text-sm font-medium transition-colors ${
-                    provider === p
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "hover:bg-accent"
-                  }`}
-                >
-                  {p === "claude" ? "Claude" : p === "openai" ? "ChatGPT" : "Kimi"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <Button onClick={() => setStep("credentials")} className="w-full">
-            Next
-          </Button>
-        </div>
-      )}
-
-      {step === "credentials" && (
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="llmkey">
-              {provider === "claude" ? "Claude API Key" : provider === "openai" ? "OpenAI API Key" : "Kimi API Key"}
-              <span className="text-muted-foreground ml-1">(optional)</span>
-            </Label>
-            <Input
-              id="llmkey"
-              type="password"
-              value={llmKey}
-              onChange={(e) => setLlmKey(e.target.value)}
-              placeholder="sk-..."
-              className="font-mono text-sm"
-            />
-            <p className="text-xs text-muted-foreground">
-              You can add this later through your bot.
-            </p>
-          </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button onClick={deploy} disabled={loading} className="w-full">
-            {loading ? "Deploying..." : "Deploy Bot"}
-          </Button>
+          <p className="text-xs text-muted-foreground text-center">
+            You'll configure your AI provider after deployment through the bot chat.
+          </p>
         </div>
       )}
 
@@ -200,7 +135,7 @@ function CreateBot() {
           <div>
             <p className="text-lg font-bold">Bot is live!</p>
             <p className="text-muted-foreground">
-              Open @{botInfo.username} in Telegram and send a message.
+              Open @{botInfo.username} in Telegram and send a message to set up your AI provider.
             </p>
           </div>
           <Button onClick={() => navigate({ to: "/mini" })} className="w-full">

@@ -21,15 +21,31 @@ interface GcpInstance {
   }[]
 }
 
+function isInternalRequest(c: Context): boolean {
+  const internalKey = process.env.INTERNAL_API_KEY
+  if (!internalKey) return false
+  return c.req.header("x-internal-key") === internalKey
+}
+
 export async function deployStatus(c: Context): Promise<Response> {
-  const session = getSession(c)
-  if (!session) return c.json({ error: "Not logged in" }, 401)
+  // Allow either session auth (web flow) or internal API key (skill scripts)
+  const internal = isInternalRequest(c)
+  if (!internal) {
+    const session = getSession(c)
+    if (!session) return c.json({ error: "Not logged in" }, 401)
+  }
 
   const deploymentId = c.req.param("id")
   const record = await getDeployment(deploymentId)
 
-  if (!record || record.userId !== session.userId) {
-    return c.json({ error: "Deployment not found" }, 404)
+  if (!record) return c.json({ error: "Deployment not found" }, 404)
+
+  // Ownership check only for session-based auth, not internal
+  if (!internal) {
+    const session = getSession(c)
+    if (record.userId !== session!.userId) {
+      return c.json({ error: "Deployment not found" }, 404)
+    }
   }
 
   if (record.status !== "done" && record.status !== "error") {
@@ -60,11 +76,19 @@ export async function deployStatus(c: Context): Promise<Response> {
     return c.json({
       status: updates.status ?? record.status,
       ip: updates.vmIp ?? record.vmIp,
+      vmName: record.vmName,
+      vmZone: record.vmZone,
       error: updates.error ?? record.error,
     })
   }
 
-  return c.json({ status: record.status, ip: record.vmIp, error: record.error })
+  return c.json({
+    status: record.status,
+    ip: record.vmIp,
+    vmName: record.vmName,
+    vmZone: record.vmZone,
+    error: record.error,
+  })
 }
 
 async function pollCreateOperation(

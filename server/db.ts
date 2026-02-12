@@ -1,5 +1,4 @@
 import pg from "pg"
-import { encrypt } from "./lib/crypto.js"
 
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
@@ -162,10 +161,7 @@ export async function findOrCreateTelegramUser(
 export interface Deployment {
   id: string
   userId: string
-  botTokenEncrypted: string
   botUsername: string | null
-  llmProvider: string
-  llmCredentialsEncrypted: string | null
   cloudProvider: string
   projectId: string | null
   vmName: string | null
@@ -181,10 +177,7 @@ export interface Deployment {
 export async function createDeployment(input: {
   id: string
   userId: string
-  botToken: string
   botUsername: string | null
-  llmProvider: string
-  llmCredentials: string | null
   projectId: string
   vmName: string
   vmZone: string
@@ -193,14 +186,12 @@ export async function createDeployment(input: {
 }): Promise<Deployment> {
   const now = new Date()
   const result = await pool.query<Deployment>(
-    `INSERT INTO deployment (id, user_id, bot_token_encrypted, bot_username, llm_provider,
-       llm_credentials_encrypted, cloud_provider, project_id, vm_name, vm_zone, operation_name,
-       status, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, 'gcp', $7, $8, $9, $10, $11, $12, $13)
+    `INSERT INTO deployment (id, user_id, bot_username, cloud_provider, project_id,
+       vm_name, vm_zone, operation_name, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'gcp', $4, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
-      input.id, input.userId, encrypt(input.botToken), input.botUsername,
-      input.llmProvider, input.llmCredentials ? encrypt(input.llmCredentials) : null,
+      input.id, input.userId, input.botUsername,
       input.projectId, input.vmName, input.vmZone, input.operationName,
       input.status, now, now,
     ],
@@ -279,10 +270,7 @@ export async function ensureSchema(): Promise<void> {
     CREATE TABLE IF NOT EXISTS deployment (
       id UUID PRIMARY KEY,
       user_id UUID REFERENCES "user"(id),
-      bot_token_encrypted TEXT NOT NULL,
       bot_username TEXT,
-      llm_provider TEXT NOT NULL,
-      llm_credentials_encrypted TEXT,
       cloud_provider TEXT DEFAULT 'gcp',
       project_id TEXT,
       vm_name TEXT,

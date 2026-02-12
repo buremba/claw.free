@@ -82,8 +82,7 @@ export async function deployStart(c: Context): Promise<Response> {
     try {
       await createDeployment({
         id: deploymentId, userId: auth.session.userId,
-        botToken: telegramToken, botUsername: null,
-        llmProvider: provider ?? "claude", llmCredentials: null,
+        botUsername: null,
         projectId, vmName, vmZone: zone, operationName: null,
         status: "error",
       })
@@ -97,7 +96,6 @@ export async function deployStart(c: Context): Promise<Response> {
   await createDeployment({
     id: deploymentId, userId: auth.session.userId,
     botToken: telegramToken, botUsername: null,
-    llmProvider: provider ?? "claude", llmCredentials: null,
     projectId, vmName, vmZone: zone,
     operationName: operation.name, status: "creating",
   })

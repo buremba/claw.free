@@ -31,6 +31,14 @@ function buildProxyHeaders(input: Headers): Headers {
   return headers
 }
 
+// --- Security headers ---
+app.use("*", async (c, next) => {
+  await next()
+  c.header("X-Content-Type-Options", "nosniff")
+  c.header("X-Frame-Options", "DENY")
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin")
+})
+
 // --- Health check ---
 app.on(["GET", "HEAD"], "/healthz", (c) => {
   if (c.req.method === "HEAD") return c.body(null, 200)

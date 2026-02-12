@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button"
 interface Bot {
   id: string
   botUsername: string | null
-  llmProvider: string
   status: string
   vmIp: string | null
   error: string | null
@@ -62,7 +61,7 @@ function MiniDashboard() {
                       {bot.botUsername ? `@${bot.botUsername}` : "Bot"}
                     </p>
                     <p className="text-xs text-muted-foreground capitalize">
-                      {bot.llmProvider}
+                      {bot.status}
                     </p>
                   </div>
                   <StatusBadge status={bot.status} />

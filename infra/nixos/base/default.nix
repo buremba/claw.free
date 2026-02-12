@@ -49,12 +49,6 @@ in
       description = "Gateway port exposed for deployment health checks.";
     };
 
-    defaultProvider = lib.mkOption {
-      type = lib.types.str;
-      default = "claude";
-      description = "Fallback LLM provider used when metadata is missing.";
-    };
-
     metadataHost = lib.mkOption {
       type = lib.types.str;
       default = "http://metadata.google.internal/computeMetadata/v1/instance/attributes";
@@ -148,9 +142,6 @@ in
           exit 1
         fi
 
-        LLM_PROVIDER="$(metadata_get LLM_PROVIDER "${cfg.defaultProvider}")"
-        LLM_CREDENTIALS="$(metadata_get LLM_CREDENTIALS "")"
-
         install -d "${stateDir}" "${homeDir}" "${configDir}" "${workspaceDir}"
 
         # Install skills (management + onboarding)
@@ -158,101 +149,28 @@ in
         install -d "${configDir}/skills"
         cp -R /etc/openclaw/skill "${configDir}/skills/claw-free"
 
-        # Determine model config based on provider and whether credentials are provided
-        if [ -n "$LLM_CREDENTIALS" ]; then
-          # Credentials provided via Mini App - configure real LLM directly
-          case "$LLM_PROVIDER" in
-            claude)
-              MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n \
-                --arg apiKey "$LLM_CREDENTIALS" \
-                '{
-                  providers: {
-                    "anthropic": {
-                      apiKey: $apiKey,
-                      api: "anthropic",
-                      models: [{
-                        id: "claude-sonnet-4-20250514",
-                        name: "Claude Sonnet",
-                        reasoning: false,
-                        input: ["text"],
-                        cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-                        contextWindow: 200000,
-                        maxTokens: 8192
-                      }]
-                    }
-                  }
-                }')
-              PRIMARY_MODEL="anthropic/claude-sonnet-4-20250514"
-              ;;
-            openai)
-              MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n \
-                --arg apiKey "$LLM_CREDENTIALS" \
-                '{
-                  providers: {
-                    "openai": {
-                      apiKey: $apiKey,
-                      api: "openai-completions",
-                      models: [{
-                        id: "gpt-4o",
-                        name: "GPT-4o",
-                        reasoning: false,
-                        input: ["text"],
-                        cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
-                        contextWindow: 128000,
-                        maxTokens: 16384
-                      }]
-                    }
-                  }
-                }')
-              PRIMARY_MODEL="openai/gpt-4o"
-              ;;
-            kimi)
-              MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n \
-                --arg apiKey "$LLM_CREDENTIALS" \
-                '{
-                  providers: {
-                    "kimi-coding": {
-                      apiKey: $apiKey,
-                      baseUrl: "https://api.moonshot.cn/v1",
-                      api: "openai-completions",
-                      models: [{
-                        id: "k2p5",
-                        name: "Kimi K2P5",
-                        reasoning: false,
-                        input: ["text"],
-                        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                        contextWindow: 128000,
-                        maxTokens: 4096
-                      }]
-                    }
-                  }
-                }')
-              PRIMARY_MODEL="kimi-coding/k2p5"
-              ;;
-          esac
-        else
-          # No credentials yet - use bootstrap provider for interactive setup
-          MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n '{
-            mode: "merge",
-            providers: {
-              "claw-free": {
-                baseUrl: "http://localhost:3456/v1",
-                apiKey: "local",
-                api: "openai-completions",
-                models: [{
-                  id: "setup",
-                  name: "claw.free Setup",
-                  reasoning: false,
-                  input: ["text"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: 128000,
-                  maxTokens: 4096
-                }]
-              }
+        # Always start with bootstrap provider — users configure their real LLM
+        # through the dummy model provider's interactive setup flow in the bot chat
+        MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n '{
+          mode: "merge",
+          providers: {
+            "claw-free": {
+              baseUrl: "http://localhost:3456/v1",
+              apiKey: "local",
+              api: "openai-completions",
+              models: [{
+                id: "setup",
+                name: "claw.free Setup",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000,
+                maxTokens: 4096
+              }]
             }
-          }')
-          PRIMARY_MODEL="claw-free/setup"
-        fi
+          }
+        }')
+        PRIMARY_MODEL="claw-free/setup"
 
         ${pkgs.jq}/bin/jq -n \
           --arg telegramToken "$TELEGRAM_TOKEN" \

@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button"
 interface BotDetail {
   id: string
   botUsername: string | null
-  llmProvider: string
   status: string
   vmIp: string | null
   vmName: string | null
@@ -69,7 +68,7 @@ function BotDetailPage() {
         <h1 className="text-xl font-bold">
           {bot.botUsername ? `@${bot.botUsername}` : "Bot Detail"}
         </h1>
-        <p className="text-sm text-muted-foreground capitalize">{bot.llmProvider}</p>
+        <p className="text-sm text-muted-foreground capitalize">{bot.status}</p>
       </div>
 
       <div className="rounded-lg border divide-y">
