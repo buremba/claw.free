@@ -1,0 +1,52 @@
+# claw.free gateway — Squid outbound proxy
+#
+# Bot VMs route outbound HTTP(S) through this proxy.
+# Default: deny all. Domains are allowed per-bot via external ACL
+# that queries the Railway API for the bot's allowlist.
+#
+# If ALLOWLIST_API_URL is empty, falls back to a static allowlist file.
+
+# Listen on overlay network only (Tailscale IP)
+http_port ${PORT_SQUID}
+
+# External ACL: queries the allowlist API to check if a domain is permitted.
+# Input: bot's Tailscale IP + requested domain
+# Response: OK or ERR
+external_acl_type domain_check ttl=60 negative_ttl=30 children-max=5 %SRC %DST /usr/local/lib/gateway/check-domain.sh
+
+# ACL definitions
+acl overlay_net src 100.64.0.0/10
+acl domain_allowed external domain_check
+
+# Always allow Telegram API (needed for all bots)
+acl telegram_api dstdomain .api.telegram.org
+acl telegram_api dstdomain .telegram.org
+
+# Always allow LLM provider APIs
+acl llm_apis dstdomain .api.openai.com
+acl llm_apis dstdomain .api.anthropic.com
+acl llm_apis dstdomain .kimi.moonshot.cn
+
+# Rules
+http_access allow overlay_net telegram_api
+http_access allow overlay_net llm_apis
+http_access allow overlay_net domain_allowed
+http_access deny all
+
+# Cache settings (minimal — we're a proxy, not a CDN)
+cache_mem 64 MB
+maximum_object_size 10 MB
+cache_dir ufs /var/spool/squid 100 16 256
+
+# Logging
+access_log /var/log/gateway/squid-access.log
+cache_log /var/log/gateway/squid-cache.log
+
+# Security
+httpd_suppress_version_string on
+forwarded_for delete
+via off
+
+# Timeouts
+connect_timeout 30 seconds
+read_timeout 120 seconds

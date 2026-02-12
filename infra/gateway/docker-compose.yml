@@ -1,0 +1,36 @@
+# claw.free gateway — runs on any VM with Docker
+#
+# Prerequisites:
+#   1. A Headscale server running (infra/overlay/)
+#   2. A pre-auth key for the "gateway" user from Headscale
+#   3. DNS wildcard pointing *.BOT_DOMAIN to this VM's IP
+#   4. DNS provider API credentials for lego cert renewal
+#
+# Usage:
+#   cp .env.example .env   # edit values
+#   docker compose up -d
+
+services:
+  gateway:
+    build: .
+    network_mode: host  # Required for Tailscale + inbound ports 80/443
+    cap_add:
+      - NET_ADMIN    # Tailscale needs tun/tap
+      - NET_RAW      # iptables for routing
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    env_file: .env
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - certs:/etc/certs
+      - lego-data:/var/lib/lego
+      - squid-cache:/var/spool/squid
+      - logs:/var/log/gateway
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
+  certs:
+  lego-data:
+  squid-cache:
+  logs:
