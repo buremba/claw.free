@@ -320,7 +320,9 @@ export async function upsertAllowlistDomainForIp(ip: string, domain: string): Pr
 export async function ensureSchema(): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS "user" (
-      id UUID PRIMARY KEY,
+      -- NOTE: This project historically used TEXT IDs in production.
+      -- Keep IDs as TEXT to remain compatible with existing Railway DBs.
+      id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       "emailVerified" BOOLEAN DEFAULT false,
@@ -330,10 +332,10 @@ export async function ensureSchema(): Promise<void> {
     );
 
     CREATE TABLE IF NOT EXISTS account (
-      id UUID PRIMARY KEY,
+      id TEXT PRIMARY KEY,
       "accountId" TEXT NOT NULL,
       "providerId" TEXT NOT NULL,
-      "userId" UUID REFERENCES "user"(id),
+      "userId" TEXT REFERENCES "user"(id),
       "accessToken" TEXT,
       "refreshToken" TEXT,
       "idToken" TEXT,
@@ -345,8 +347,8 @@ export async function ensureSchema(): Promise<void> {
     );
 
     CREATE TABLE IF NOT EXISTS channel_identity (
-      id UUID PRIMARY KEY,
-      user_id UUID REFERENCES "user"(id),
+      id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES "user"(id),
       channel_type TEXT NOT NULL,
       channel_user_id TEXT NOT NULL,
       display_name TEXT,
@@ -357,8 +359,8 @@ export async function ensureSchema(): Promise<void> {
     );
 
     CREATE TABLE IF NOT EXISTS deployment (
-      id UUID PRIMARY KEY,
-      user_id UUID REFERENCES "user"(id),
+      id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES "user"(id),
       bot_username TEXT,
       cloud_provider TEXT DEFAULT 'gcp',
       project_id TEXT,
@@ -376,7 +378,7 @@ export async function ensureSchema(): Promise<void> {
     );
 
     CREATE TABLE IF NOT EXISTS bot_allowlist (
-      id UUID PRIMARY KEY,
+      id TEXT PRIMARY KEY,
       ip TEXT NOT NULL,
       domain TEXT NOT NULL,
       created_at TIMESTAMPTZ DEFAULT now(),
