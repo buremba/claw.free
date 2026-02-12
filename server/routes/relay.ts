@@ -1,10 +1,17 @@
 import type { Context } from "hono"
+import { timingSafeEqual } from "node:crypto"
 import { getDeployment } from "../db.js"
 import {
   forwardViaTunnel,
   isTunnelConnected,
   getTunnelStats,
 } from "../lib/relay.js"
+
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a)
+  const bufB = Buffer.from(b)
+  return bufA.length === bufB.length && timingSafeEqual(bufA, bufB)
+}
 
 /**
  * Webhook receiver — Telegram sends webhooks here.
@@ -25,7 +32,7 @@ export async function relayWebhook(c: Context): Promise<Response> {
   // when secret_token was set via setWebhook. Prevents spoofed webhook requests.
   const receivedSecret = c.req.header("x-telegram-bot-api-secret-token")
   if (deployment.webhookSecret) {
-    if (!receivedSecret || receivedSecret !== deployment.webhookSecret) {
+    if (!receivedSecret || !safeEqual(receivedSecret, deployment.webhookSecret)) {
       return c.json({ error: "Invalid webhook secret" }, 403)
     }
   }
@@ -66,7 +73,8 @@ export async function relayWebhook(c: Context): Promise<Response> {
 export async function relayStatus(c: Context): Promise<Response> {
   const internalKey = process.env.INTERNAL_API_KEY
   // Require key if configured; deny if not configured (don't expose by default)
-  if (!internalKey || c.req.header("X-Internal-Key") !== internalKey) {
+  const receivedKey = c.req.header("X-Internal-Key")
+  if (!internalKey || !receivedKey || !safeEqual(receivedKey, internalKey)) {
     return c.json({ error: "Unauthorized" }, 401)
   }
 

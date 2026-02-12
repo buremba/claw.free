@@ -1,4 +1,5 @@
 import type { Context } from "hono"
+import { timingSafeEqual } from "node:crypto"
 import { getDeployment, updateDeployment, type Deployment } from "../db.js"
 import { DEPLOY_TIMEOUT_MS, isDeployTimedOut } from "../lib/deploy.js"
 import { resolveGoogleAuth } from "../lib/google-auth.js"
@@ -24,7 +25,9 @@ interface GcpInstance {
 function isInternalRequest(c: Context): boolean {
   const internalKey = process.env.INTERNAL_API_KEY
   if (!internalKey) return false
-  return c.req.header("x-internal-key") === internalKey
+  const received = c.req.header("x-internal-key")
+  if (!received) return false
+  return timingSafeEqual(Buffer.from(received), Buffer.from(internalKey))
 }
 
 export async function deployStatus(c: Context): Promise<Response> {

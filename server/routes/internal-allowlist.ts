@@ -1,4 +1,5 @@
 import type { Context } from "hono"
+import { timingSafeEqual } from "node:crypto"
 
 // Static allowlist of domains all bots can access (beyond Telegram + LLM APIs
 // which are handled directly in Squid config).
@@ -16,7 +17,8 @@ const GLOBAL_ALLOWED_DOMAINS = [
 
 export async function internalAllowlist(c: Context): Promise<Response> {
   const internalKey = process.env.INTERNAL_API_KEY
-  if (!internalKey || c.req.header("X-Internal-Key") !== internalKey) {
+  const receivedKey = c.req.header("X-Internal-Key")
+  if (!internalKey || !receivedKey || !timingSafeEqual(Buffer.from(receivedKey), Buffer.from(internalKey))) {
     return c.json({ error: "Unauthorized" }, 401)
   }
 
