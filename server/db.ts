@@ -1,5 +1,5 @@
 import pg from "pg"
-import { encrypt, decrypt } from "./lib/crypto.js"
+import { encrypt } from "./lib/crypto.js"
 
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
@@ -74,16 +74,6 @@ export async function getAccountByUserId(
     [userId, providerId],
   )
   return result.rows[0] ?? null
-}
-
-export async function getAccessTokenByAccountId(
-  accountId: string,
-): Promise<string | null> {
-  const result = await pool.query<{ accessToken: string | null }>(
-    `SELECT "accessToken" FROM account WHERE id = $1 LIMIT 1`,
-    [accountId],
-  )
-  return result.rows[0]?.accessToken ?? null
 }
 
 export async function upsertGoogleAccount(
@@ -268,15 +258,6 @@ export async function getDeploymentsByUserId(userId: string): Promise<Deployment
 
 export async function deleteDeployment(id: string): Promise<void> {
   await pool.query(`DELETE FROM deployment WHERE id = $1`, [id])
-}
-
-export function decryptBotToken(deployment: Deployment): string {
-  return decrypt(deployment.botTokenEncrypted)
-}
-
-export function decryptLlmCredentials(deployment: Deployment): string | null {
-  if (!deployment.llmCredentialsEncrypted) return null
-  return decrypt(deployment.llmCredentialsEncrypted)
 }
 
 // --- Schema migration ---

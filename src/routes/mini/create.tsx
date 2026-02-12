@@ -23,7 +23,6 @@ function CreateBot() {
   const [llmKey, setLlmKey] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [, setDeploymentId] = useState<string | null>(null)
   const [deployStatus, setDeployStatus] = useState("")
 
   async function validateToken() {
@@ -68,7 +67,6 @@ function CreateBot() {
         setStep("credentials")
         return
       }
-      setDeploymentId(data.deploymentId)
       pollDeployStatus(data.deploymentId)
     } catch {
       setError("Deployment failed")
