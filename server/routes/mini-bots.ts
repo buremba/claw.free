@@ -7,20 +7,10 @@ import {
   deleteDeployment,
 } from "../db.js"
 import { validateBotToken, isValidBotToken } from "../lib/telegram.js"
-import {
-  DEFAULT_SOURCE_IMAGE,
-  buildInstanceRequestBody,
-  generateVmName,
-  sanitizeBotName,
-} from "../lib/deploy.js"
-import {
-  createBotPreAuthKey,
-  deleteNode,
-  findNodeByHostname,
-  isHeadscaleConfigured,
-} from "../lib/headscale.js"
+import { sanitizeBotName } from "../lib/deploy.js"
+import { getProvider, hasProvider } from "../lib/providers/index.js"
 
-const MAX_BOT_NAME_LENGTH = 255
+const MAX_AGENT_NAME_LENGTH = 255
 
 export async function miniListBots(c: Context): Promise<Response> {
   const auth = getMiniAuth(c)
@@ -59,7 +49,7 @@ export async function miniGetBot(c: Context): Promise<Response> {
   })
 }
 
-interface CreateBotRequest {
+interface CreateAgentRequest {
   botToken: string
   botName?: string
 }
@@ -68,7 +58,11 @@ export async function miniCreateBot(c: Context): Promise<Response> {
   const auth = getMiniAuth(c)
   if (!auth) return c.json({ error: "Unauthorized" }, 401)
 
-  const body = (await c.req.json()) as CreateBotRequest
+  if (!hasProvider()) {
+    return c.json({ error: "No agent provider configured" }, 500)
+  }
+
+  const body = (await c.req.json()) as CreateAgentRequest
   const { botToken, botName } = body
 
   if (!botToken) {
@@ -85,91 +79,55 @@ export async function miniCreateBot(c: Context): Promise<Response> {
     return c.json({ error: "Bot token is invalid or revoked" }, 400)
   }
 
-  // For Mode A (platform GCP), we use our service account
-  const gcpKey = process.env.GCP_SERVICE_ACCOUNT_KEY
-  const gcpProject = process.env.GCP_PROJECT_ID
-  if (!gcpKey || !gcpProject) {
-    return c.json({ error: "Platform deployment not configured" }, 500)
+  const agentNameRaw = botName ?? botInfo.username ?? "openclaw-agent"
+  if (agentNameRaw.length > MAX_AGENT_NAME_LENGTH) {
+    return c.json({ error: "Agent name too long" }, 400)
   }
 
-  const botNameRaw = botName ?? botInfo.username ?? "openclaw-bot"
-  if (botNameRaw.length > MAX_BOT_NAME_LENGTH) {
-    return c.json({ error: "Bot name too long" }, 400)
-  }
-  const normalizedBotName = sanitizeBotName(botNameRaw)
-  const vmName = generateVmName(normalizedBotName)
   const deploymentId = crypto.randomUUID()
-  const zone = "us-central1-a"
-  const sourceImage = process.env.DEPLOY_SOURCE_IMAGE ?? DEFAULT_SOURCE_IMAGE
-
-  // Get access token from service account
-  const accessToken = await getServiceAccountToken(gcpKey)
-  if (!accessToken) {
-    return c.json({ error: "Failed to authenticate with cloud provider" }, 500)
-  }
-
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
-    "Content-Type": "application/json",
-  }
-
-  // Generate overlay network pre-auth key (if Headscale is configured)
-  let tailscaleAuthKey: string | undefined
-  if (isHeadscaleConfigured()) {
-    try {
-      tailscaleAuthKey = await createBotPreAuthKey()
-    } catch (err) {
-      console.error("Failed to create overlay pre-auth key:", err)
-    }
-  }
-
-  // Generate relay tunnel token + webhook secret (Railway-native connectivity)
-  const relayToken = crypto.randomUUID()
   const webhookSecret = crypto.randomUUID()
-  const relayUrl = process.env.RELAY_URL ?? process.env.BASE_URL
 
-  const instanceBody = buildInstanceRequestBody({
-    zone,
-    vmName,
-    provider: "claude",
-    telegramToken: botToken,
-    botName: normalizedBotName,
-    sourceImage,
-    tailscaleAuthKey,
-    headscaleUrl: process.env.HEADSCALE_URL,
-    relayUrl,
-    relayToken,
-  })
-
-  const vmRes = await fetch(
-    `https://compute.googleapis.com/compute/v1/projects/${gcpProject}/zones/${zone}/instances`,
-    { method: "POST", headers, body: JSON.stringify(instanceBody) },
-  )
-
-  if (!vmRes.ok) {
-    const err = await vmRes.text()
-    return c.json({ error: `VM creation failed: ${err.slice(0, 200)}` }, 500)
+  // Use the configured provider (Railway or GCP)
+  const provider = getProvider()
+  let result
+  try {
+    result = await provider.createAgent({
+      deploymentId,
+      agentToken: botToken,
+      agentName: sanitizeBotName(agentNameRaw),
+      agentUsername: botInfo.username,
+      webhookSecret,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return c.json({ error: `Agent creation failed: ${msg.slice(0, 200)}` }, 500)
   }
 
-  const operation = (await vmRes.json()) as { name: string }
+  const { providerMeta: meta } = result
 
   await createDeployment({
     id: deploymentId,
     userId: auth.userId,
     botUsername: botInfo.username,
-    projectId: gcpProject,
-    vmName,
-    vmZone: zone,
-    operationName: operation.name,
+    cloudProvider: meta.cloudProvider,
+    projectId: meta.projectId,
+    vmName: meta.vmName,
+    vmZone: meta.vmZone,
+    operationName: meta.operationName,
     status: "creating",
-    relayToken,
+    relayToken: meta.relayToken,
     webhookSecret,
+    railwayServiceId: meta.railwayServiceId,
   })
 
   // Set Telegram webhook URL with secret token for signature verification.
   // Telegram includes X-Telegram-Bot-Api-Secret-Token header on every webhook.
-  if (relayUrl) {
-    const webhookUrl = `${relayUrl}/relay/hook/${deploymentId}`
+  const webhookUrl = result.webhookUrl
+    ?? (process.env.RELAY_URL ?? process.env.BASE_URL
+      ? `${process.env.RELAY_URL ?? process.env.BASE_URL}/relay/hook/${deploymentId}`
+      : null)
+
+  if (webhookUrl) {
     try {
       await fetch(
         `https://api.telegram.org/bot${botToken}/setWebhook`,
@@ -196,31 +154,20 @@ export async function miniDeleteBot(c: Context): Promise<Response> {
     return c.json({ error: "Not found" }, 404)
   }
 
-  // Remove from overlay network (best effort)
-  if (isHeadscaleConfigured() && deployment.vmName) {
+  // Use the provider abstraction to tear down the agent
+  if (hasProvider()) {
     try {
-      const node = await findNodeByHostname(deployment.vmName)
-      if (node) await deleteNode(node.nodeId)
+      const provider = getProvider()
+      await provider.deleteAgent({
+        cloudProvider: deployment.cloudProvider,
+        projectId: deployment.projectId,
+        vmName: deployment.vmName,
+        vmZone: deployment.vmZone,
+        operationName: deployment.operationName,
+        relayToken: deployment.relayToken,
+        railwayServiceId: deployment.railwayServiceId,
+      })
     } catch { /* best effort */ }
-  }
-
-  // Delete GCP VM if it exists
-  if (deployment.vmName && deployment.projectId && deployment.vmZone) {
-    const gcpKey = process.env.GCP_SERVICE_ACCOUNT_KEY
-    if (gcpKey) {
-      const accessToken = await getServiceAccountToken(gcpKey)
-      if (accessToken) {
-        try {
-          await fetch(
-            `https://compute.googleapis.com/compute/v1/projects/${deployment.projectId}/zones/${deployment.vmZone}/instances/${deployment.vmName}`,
-            {
-              method: "DELETE",
-              headers: { Authorization: `Bearer ${accessToken}` },
-            },
-          )
-        } catch { /* best effort */ }
-      }
-    }
   }
 
   await deleteDeployment(deployment.id)
@@ -247,48 +194,4 @@ export async function miniValidateToken(c: Context): Promise<Response> {
     valid: true,
     bot: { id: botInfo.id, username: botInfo.username, name: botInfo.first_name },
   })
-}
-
-async function getServiceAccountToken(keyJson: string): Promise<string | null> {
-  try {
-    const key = JSON.parse(keyJson) as {
-      client_email: string
-      private_key: string
-      token_uri: string
-    }
-
-    const now = Math.floor(Date.now() / 1000)
-    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url")
-    const payload = Buffer.from(
-      JSON.stringify({
-        iss: key.client_email,
-        scope: "https://www.googleapis.com/auth/compute",
-        aud: key.token_uri,
-        iat: now,
-        exp: now + 3600,
-      }),
-    ).toString("base64url")
-
-    const { createSign } = await import("node:crypto")
-    const signer = createSign("RSA-SHA256")
-    signer.update(`${header}.${payload}`)
-    const signature = signer.sign(key.private_key, "base64url")
-
-    const jwt = `${header}.${payload}.${signature}`
-
-    const res = await fetch(key.token_uri, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion: jwt,
-      }),
-    })
-
-    if (!res.ok) return null
-    const data = (await res.json()) as { access_token: string }
-    return data.access_token
-  } catch {
-    return null
-  }
 }

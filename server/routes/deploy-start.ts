@@ -105,7 +105,7 @@ export async function deployStart(c: Context): Promise<Response> {
     try {
       await createDeployment({
         id: deploymentId, userId: auth.session.userId,
-        botUsername: null,
+        botUsername: null, cloudProvider: "gcp",
         projectId, vmName, vmZone: zone, operationName: null,
         status: "error",
       })
@@ -118,7 +118,7 @@ export async function deployStart(c: Context): Promise<Response> {
 
   await createDeployment({
     id: deploymentId, userId: auth.session.userId,
-    botUsername: null,
+    botUsername: null, cloudProvider: "gcp",
     projectId, vmName, vmZone: zone,
     operationName: operation.name, status: "creating",
     relayToken,

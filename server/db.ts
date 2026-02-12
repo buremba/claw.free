@@ -174,34 +174,49 @@ export interface Deployment {
   operationName: string | null
   relayToken: string | null
   webhookSecret: string | null
+  railwayServiceId: string | null
   status: string
   error: string | null
   createdAt: Date
   updatedAt: Date
 }
 
+// Column alias list — maps snake_case DB columns to camelCase interface fields
+const DEPLOYMENT_COLUMNS = `
+  id, user_id AS "userId", bot_username AS "botUsername",
+  cloud_provider AS "cloudProvider", project_id AS "projectId",
+  vm_name AS "vmName", vm_zone AS "vmZone", vm_ip AS "vmIp",
+  operation_name AS "operationName", relay_token AS "relayToken",
+  webhook_secret AS "webhookSecret", railway_service_id AS "railwayServiceId",
+  status, error, created_at AS "createdAt", updated_at AS "updatedAt"
+`.replace(/\n/g, " ")
+
 export async function createDeployment(input: {
   id: string
   userId: string
   botUsername: string | null
-  projectId: string
-  vmName: string
-  vmZone: string
+  cloudProvider: string
+  projectId: string | null
+  vmName: string | null
+  vmZone: string | null
   operationName: string | null
   status: string
-  relayToken?: string
-  webhookSecret?: string
+  relayToken?: string | null
+  webhookSecret?: string | null
+  railwayServiceId?: string | null
 }): Promise<Deployment> {
   const now = new Date()
   const result = await pool.query<Deployment>(
     `INSERT INTO deployment (id, user_id, bot_username, cloud_provider, project_id,
-       vm_name, vm_zone, operation_name, relay_token, webhook_secret, status, created_at, updated_at)
-     VALUES ($1, $2, $3, 'gcp', $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     RETURNING *`,
+       vm_name, vm_zone, operation_name, relay_token, webhook_secret, railway_service_id,
+       status, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     RETURNING ${DEPLOYMENT_COLUMNS}`,
     [
-      input.id, input.userId, input.botUsername,
-      input.projectId, input.vmName, input.vmZone, input.operationName,
-      input.relayToken ?? null, input.webhookSecret ?? null,
+      input.id, input.userId, input.botUsername, input.cloudProvider,
+      input.projectId ?? null, input.vmName ?? null, input.vmZone ?? null,
+      input.operationName ?? null, input.relayToken ?? null,
+      input.webhookSecret ?? null, input.railwayServiceId ?? null,
       input.status, now, now,
     ],
   )
@@ -210,7 +225,7 @@ export async function createDeployment(input: {
 
 export async function getDeploymentByRelayToken(token: string): Promise<Deployment | null> {
   const result = await pool.query<Deployment>(
-    `SELECT * FROM deployment WHERE relay_token = $1 LIMIT 1`,
+    `SELECT ${DEPLOYMENT_COLUMNS} FROM deployment WHERE relay_token = $1 LIMIT 1`,
     [token],
   )
   return result.rows[0] ?? null
@@ -218,7 +233,7 @@ export async function getDeploymentByRelayToken(token: string): Promise<Deployme
 
 export async function getDeployment(id: string): Promise<Deployment | null> {
   const result = await pool.query<Deployment>(
-    `SELECT * FROM deployment WHERE id = $1 LIMIT 1`,
+    `SELECT ${DEPLOYMENT_COLUMNS} FROM deployment WHERE id = $1 LIMIT 1`,
     [id],
   )
   return result.rows[0] ?? null
@@ -258,7 +273,7 @@ export async function updateDeployment(
 
 export async function getDeploymentsByUserId(userId: string): Promise<Deployment[]> {
   const result = await pool.query<Deployment>(
-    `SELECT * FROM deployment WHERE user_id = $1 ORDER BY created_at DESC`,
+    `SELECT ${DEPLOYMENT_COLUMNS} FROM deployment WHERE user_id = $1 ORDER BY created_at DESC`,
     [userId],
   )
   return result.rows
@@ -296,6 +311,7 @@ export async function ensureSchema(): Promise<void> {
       operation_name TEXT,
       relay_token TEXT UNIQUE,
       webhook_secret TEXT,
+      railway_service_id TEXT,
       status TEXT DEFAULT 'pending',
       error TEXT,
       created_at TIMESTAMPTZ DEFAULT now(),
@@ -305,6 +321,7 @@ export async function ensureSchema(): Promise<void> {
     -- Migrations for existing deployments
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS relay_token TEXT;
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
+    ALTER TABLE deployment ADD COLUMN IF NOT EXISTS railway_service_id TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_relay_token
       ON deployment(relay_token) WHERE relay_token IS NOT NULL;
   `)
