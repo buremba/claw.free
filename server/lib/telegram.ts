@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto"
+import { createHmac, timingSafeEqual } from "node:crypto"
 
 export interface TelegramUser {
   id: number
@@ -37,7 +37,11 @@ export function validateInitData(
     .update(dataCheckString)
     .digest("hex")
 
-  if (computedHash !== hash) return null
+  const computedBuf = Buffer.from(computedHash, "hex")
+  const hashBuf = Buffer.from(hash, "hex")
+  if (computedBuf.length !== hashBuf.length || !timingSafeEqual(computedBuf, hashBuf)) {
+    return null
+  }
 
   try {
     return JSON.parse(params.get("user") ?? "{}") as TelegramUser

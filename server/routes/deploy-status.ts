@@ -2,6 +2,7 @@ import type { Context } from "hono"
 import { getDeployment, updateDeployment, type Deployment } from "../db.js"
 import { DEPLOY_TIMEOUT_MS, isDeployTimedOut } from "../lib/deploy.js"
 import { resolveGoogleAuth } from "../lib/google-auth.js"
+import { getSession } from "../lib/session.js"
 import {
   extractSetupMarkerValue,
   resolveSetupProgress,
@@ -21,10 +22,15 @@ interface GcpInstance {
 }
 
 export async function deployStatus(c: Context): Promise<Response> {
+  const session = getSession(c)
+  if (!session) return c.json({ error: "Not logged in" }, 401)
+
   const deploymentId = c.req.param("id")
   const record = await getDeployment(deploymentId)
 
-  if (!record) return c.json({ error: "Deployment not found" }, 404)
+  if (!record || record.userId !== session.userId) {
+    return c.json({ error: "Deployment not found" }, 404)
+  }
 
   if (record.status !== "done" && record.status !== "error") {
     if (isDeployTimedOut(record.createdAt.getTime(), Date.now(), DEPLOY_TIMEOUT_MS)) {
