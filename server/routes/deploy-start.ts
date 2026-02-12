@@ -95,7 +95,7 @@ export async function deployStart(c: Context): Promise<Response> {
 
   await createDeployment({
     id: deploymentId, userId: auth.session.userId,
-    botToken: telegramToken, botUsername: null,
+    botUsername: null,
     projectId, vmName, vmZone: zone,
     operationName: operation.name, status: "creating",
   })
