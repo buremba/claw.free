@@ -7,6 +7,7 @@ let
   configDir = "${homeDir}/.openclaw";
   configPath = "${configDir}/openclaw.json";
   workspaceDir = "${configDir}/workspace";
+  gatewayEnvPath = "${stateDir}/gateway.env";
   setupMarker = "${stateDir}/.setup-complete";
   guestAttributeSetupUrl = "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/openclaw/setup";
   aiCliBundle = pkgs.buildNpmPackage {
@@ -142,6 +143,12 @@ in
           exit 1
         fi
 
+        GATEWAY_TOKEN="$(metadata_get GATEWAY_TOKEN "")"
+        if [ -z "$GATEWAY_TOKEN" ]; then
+          # Per-instance token so the gateway can start (OpenClaw defaults to token auth).
+          GATEWAY_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        fi
+
         install -d "${stateDir}" "${homeDir}" "${configDir}" "${workspaceDir}"
 
         # Install skills (management + onboarding)
@@ -198,12 +205,21 @@ in
                 groupPolicy: "allowlist"
               }
             },
+            plugins: {
+              entries: {
+                telegram: { enabled: true }
+              }
+            },
             models: $models
           }' > "${configPath}"
         chmod 600 "${configPath}"
 
         touch "${setupMarker}"
-        publish_setup_state "ready"
+        printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$GATEWAY_TOKEN" > "${gatewayEnvPath}"
+        chmod 600 "${gatewayEnvPath}"
+
+        # Defer "ready" until the gateway is actually running.
+        publish_setup_state "starting-gateway"
         SETUP_STATUS_REPORTED=1
       '';
     };
@@ -241,6 +257,48 @@ in
 
     environment.etc."openclaw/relay-client/tunnel.mjs".source = "${clawfreeRoot}/infra/relay-client/tunnel.mjs";
 
+    systemd.services.openclaw-gateway-ready = {
+      description = "Publish guest-attribute ready once OpenClaw gateway is running";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "openclaw-gateway.service" ];
+      requires = [ "openclaw-gateway.service" ];
+
+      path = with pkgs; [
+        bash
+        coreutils
+        curl
+        systemd
+      ];
+
+      serviceConfig = {
+        Type = "oneshot";
+      };
+
+      script = ''
+        set -euo pipefail
+
+        publish_setup_state() {
+          local value="$1"
+          ${pkgs.curl}/bin/curl -fsS -m 2 -X PUT "${guestAttributeSetupUrl}" \
+            -H "Metadata-Flavor: Google" \
+            --data-binary "$value" >/dev/null 2>&1 || true
+        }
+
+        # Wait up to 3 minutes for the gateway process to be active and serve HTTP.
+        for _ in $(seq 1 36); do
+          if systemctl is-active --quiet openclaw-gateway.service && \
+             ${pkgs.curl}/bin/curl -fsS -m 2 -o /dev/null "http://127.0.0.1:${toString cfg.gatewayPort}/__openclaw__/canvas/"; then
+            publish_setup_state "ready"
+            exit 0
+          fi
+          sleep 5
+        done
+
+        publish_setup_state "failed:gateway-timeout"
+        exit 1
+      '';
+    };
+
     systemd.services.openclaw-gateway = {
       description = "OpenClaw gateway";
       wantedBy = [ "multi-user.target" ];
@@ -251,7 +309,6 @@ in
       environment = {
         HOME = homeDir;
         OPENCLAW_CONFIG_PATH = configPath;
-        OPENCLAW_GATEWAY_TOKEN = "claw-free-local-token";
         PATH = lib.mkForce clawPath;
       };
 
@@ -259,6 +316,7 @@ in
         Type = "simple";
         WorkingDirectory = homeDir;
         ExecStart = "${aiCliBundle}/bin/openclaw gateway --bind lan --port ${toString cfg.gatewayPort}";
+        EnvironmentFile = "-${gatewayEnvPath}";
         Restart = "always";
         RestartSec = 5;
       };
