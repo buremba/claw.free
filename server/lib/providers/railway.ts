@@ -65,6 +65,8 @@ export class RailwayProvider implements AgentProvider {
       BOT_NAME: input.agentName,
       WEBHOOK_SECRET: input.webhookSecret,
       DEPLOYMENT_ID: input.deploymentId,
+      OPENCLAW_GATEWAY_TOKEN: crypto.randomUUID(),
+      NODE_OPTIONS: "--max-old-space-size=1024",
     }
     for (const [name, value] of Object.entries(vars)) {
       await this.gql(token, {
@@ -85,18 +87,25 @@ export class RailwayProvider implements AgentProvider {
       variables: { input: { serviceId, environmentId } },
     })
     const domain = domainResult.serviceDomainCreate.domain
-    const webhookUrl = `https://${domain}/webhook`
 
-    // 5. Set WEBHOOK_URL (agent needs its own URL) — this triggers the deploy
+    // 5. Set the public URL so the agent can reference it if needed — triggers deploy
     await this.gql(token, {
       query: `mutation($input: VariableUpsertInput!) { variableUpsert(input: $input) }`,
       variables: {
-        input: { projectId, environmentId, serviceId, name: "WEBHOOK_URL", value: webhookUrl },
+        input: { projectId, environmentId, serviceId, name: "PUBLIC_URL", value: `https://${domain}` },
       },
     })
 
+    // Clear any existing webhook — openclaw handles Telegram via polling
+    try {
+      await fetch(
+        `https://api.telegram.org/bot${input.agentToken}/deleteWebhook`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      )
+    } catch { /* best effort */ }
+
     return {
-      webhookUrl,
+      // No webhookUrl — openclaw manages Telegram polling internally
       providerMeta: {
         cloudProvider: "railway",
         projectId,

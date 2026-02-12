@@ -47,6 +47,11 @@ cat > "$CONFIG_PATH" <<CONF
       "groupPolicy": "allowlist"
     }
   },
+  "plugins": {
+    "entries": {
+      "telegram": { "enabled": true }
+    }
+  },
   "models": {
     "mode": "merge",
     "providers": {
@@ -71,5 +76,12 @@ CONF
 
 chmod 600 "$CONFIG_PATH"
 
+# Generate a gateway token if not set
+export OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-$(head -c 32 /dev/urandom | base64)}"
+
+# Create required directories for openclaw
+mkdir -p "$CONFIG_DIR/agents/main/sessions" "$CONFIG_DIR/credentials"
+chmod 700 "$CONFIG_DIR"
+
 echo "Starting OpenClaw agent (port=$PORT, bot=$BOT_NAME)"
-exec npx openclaw gateway --port "$PORT"
+exec openclaw gateway --bind auto --port "$PORT"

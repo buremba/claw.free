@@ -11,7 +11,7 @@
 #   DEPLOYMENT_ID   — Platform deployment ID
 #   PORT            — Listening port (auto-set by Railway)
 
-FROM node:22-slim
+FROM --platform=linux/amd64 node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates python3 gcc g++ make \
@@ -19,9 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install openclaw CLI and AI tools
+# Install project dependencies
 COPY package.json package-lock.json* ./
 RUN npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
+
+# Pre-install openclaw globally so it's available without npx download on each start
+RUN npm install -g openclaw@latest
 
 # Copy skill definitions + relay client (relay not used in Railway mode, but
 # included for completeness if the image is reused in GCP Docker mode)

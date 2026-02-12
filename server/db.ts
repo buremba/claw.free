@@ -140,9 +140,9 @@ export async function findOrCreateTelegramUser(
     const now = new Date()
     const userId = crypto.randomUUID()
     await client.query(
-      `INSERT INTO "user" (id, name, email, "emailVerified", image, "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, false, $4, $5, $6)`,
-      [userId, displayName ?? "Telegram User", `telegram:${telegramId}@noemail`, avatarUrl, now, now],
+      `INSERT INTO "user" (id, name, email, "emailVerified", image, "createdAt", "updatedAt", username)
+       VALUES ($1, $2, $3, false, $4, $5, $6, $7)`,
+      [userId, displayName ?? "Telegram User", `telegram:${telegramId}@noemail`, avatarUrl, now, now, `tg_${telegramId}`],
     )
     const ciId = crypto.randomUUID()
     await client.query(
@@ -389,5 +389,10 @@ export async function ensureSchema(): Promise<void> {
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS relay_token TEXT;
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS railway_service_id TEXT;
+
+    -- Migrations for user table (production DB has these columns)
+    ALTER TABLE "user" ADD COLUMN IF NOT EXISTS username TEXT;
+    UPDATE "user" SET username = 'user_' || id WHERE username IS NULL;
+    ALTER TABLE "user" ALTER COLUMN username SET NOT NULL;
   `)
 }

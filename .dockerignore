@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-server
+.git
+.tmp
+.env
+*.md
+.github
+.vscode
+.eslintrc*
+tsconfig*.json
+vite.config.*
+src
+server
