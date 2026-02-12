@@ -154,6 +154,19 @@ export async function findOrCreateTelegramUser(
     return { userId, channelIdentityId: ciId }
   } catch (e) {
     await client.query("ROLLBACK")
+    // Race condition: another request created this user concurrently.
+    // Unique constraint violation (23505) — re-check and return existing record.
+    const isUniqueViolation = e instanceof Error && "code" in e && (e as { code: string }).code === "23505"
+    if (isUniqueViolation) {
+      const retry = await pool.query<{ id: string; user_id: string }>(
+        `SELECT id, user_id FROM channel_identity
+         WHERE channel_type = 'telegram' AND channel_user_id = $1 LIMIT 1`,
+        [telegramId],
+      )
+      if (retry.rows[0]) {
+        return { userId: retry.rows[0].user_id, channelIdentityId: retry.rows[0].id }
+      }
+    }
     throw e
   } finally {
     client.release()

@@ -7,10 +7,10 @@ const TAG_LENGTH = 16
 function getEncryptionKey(): Buffer {
   const key = process.env.ENCRYPTION_KEY
   if (!key) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("ENCRYPTION_KEY env var is required")
+    if (process.env.NODE_ENV === "development") {
+      return Buffer.alloc(32, "dev-key-claw-free-not-secure!!")
     }
-    return Buffer.alloc(32, "dev-key-claw-free-not-secure!!")
+    throw new Error("ENCRYPTION_KEY env var is required (set NODE_ENV=development to use insecure dev key)")
   }
   const buf = Buffer.from(key, "hex")
   if (buf.length !== 32) {

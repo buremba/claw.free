@@ -36,8 +36,11 @@ function isValidTunnelResponse(msg: unknown): msg is TunnelResponse {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// Max WebSocket message size (1 MB) — prevents memory exhaustion from oversized payloads
+const MAX_MESSAGE_SIZE = 1024 * 1024
+
 export function setupRelayWebSocket(server: any): void {
-  const wss = new WebSocketServer({ noServer: true })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_SIZE })
 
   server.on("upgrade", async (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => {
     try {

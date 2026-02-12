@@ -54,32 +54,31 @@ export async function deployStatus(c: Context): Promise<Response> {
       return c.json({ status: "error", ip: record.vmIp, error: "Deployment timed out after 5 minutes" })
     }
 
+    // GCP polling requires a Google OAuth access token. For internal requests
+    // (skill scripts) or non-GCP deployments (Railway), skip polling and return DB state.
     const auth = await resolveGoogleAuth(c)
-    if (!auth?.accessToken) {
-      await updateDeployment(deploymentId, { status: "error", error: "Session expired" })
-      return c.json({ status: "error", ip: record.vmIp, error: "Session expired" })
+    if (auth?.accessToken && record.cloudProvider === "gcp") {
+      const headers = { Authorization: `Bearer ${auth.accessToken}` }
+      const updates: Partial<Pick<Deployment, "status" | "vmIp" | "error">> = {}
+
+      if (record.status === "creating" && record.operationName) {
+        await pollCreateOperation(headers, record, updates)
+      } else if (record.status === "booting" || record.status === "health-checking") {
+        await pollVmState(headers, record, updates)
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await updateDeployment(deploymentId, updates)
+      }
+
+      return c.json({
+        status: updates.status ?? record.status,
+        ip: updates.vmIp ?? record.vmIp,
+        vmName: record.vmName,
+        vmZone: record.vmZone,
+        error: updates.error ?? record.error,
+      })
     }
-
-    const headers = { Authorization: `Bearer ${auth.accessToken}` }
-    const updates: Partial<Pick<Deployment, "status" | "vmIp" | "error">> = {}
-
-    if (record.status === "creating" && record.operationName) {
-      await pollCreateOperation(headers, record, updates)
-    } else if (record.status === "booting" || record.status === "health-checking") {
-      await pollVmState(headers, record, updates)
-    }
-
-    if (Object.keys(updates).length > 0) {
-      await updateDeployment(deploymentId, updates)
-    }
-
-    return c.json({
-      status: updates.status ?? record.status,
-      ip: updates.vmIp ?? record.vmIp,
-      vmName: record.vmName,
-      vmZone: record.vmZone,
-      error: updates.error ?? record.error,
-    })
   }
 
   return c.json({

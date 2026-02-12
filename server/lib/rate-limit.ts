@@ -16,11 +16,19 @@ setInterval(() => {
 }, 300_000).unref()
 
 function getClientIp(c: Context): string {
-  return (
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
-    c.req.header("x-real-ip") ??
-    "unknown"
-  )
+  // Use x-real-ip if set by reverse proxy, otherwise take the rightmost
+  // x-forwarded-for entry (the one appended by the trusted proxy, not
+  // client-spoofable leftmost entries).
+  const realIp = c.req.header("x-real-ip")
+  if (realIp) return realIp
+
+  const xff = c.req.header("x-forwarded-for")
+  if (xff) {
+    const parts = xff.split(",").map((s) => s.trim()).filter(Boolean)
+    return parts[parts.length - 1] ?? "unknown"
+  }
+
+  return "unknown"
 }
 
 export function rateLimit(maxRequests: number, windowMs: number) {
