@@ -16,6 +16,8 @@ import { telegramDetectUser } from "./routes/telegram-detect-user.js"
 import { miniAuth } from "./routes/mini-auth.js"
 import { miniListBots, miniGetBot, miniCreateBot, miniDeleteBot, miniValidateToken } from "./routes/mini-bots.js"
 import { internalAllowlist } from "./routes/internal-allowlist.js"
+import { relayWebhook, relayStatus } from "./routes/relay.js"
+import { setupRelayWebSocket } from "./lib/relay-ws.js"
 import { rateLimit } from "./lib/rate-limit.js"
 import { ensureSchema } from "./db.js"
 
@@ -69,6 +71,12 @@ app.post("/api/mini/validate-token", rateLimit(10, 60_000), miniValidateToken)
 // --- Internal routes (gateway → API, authenticated via X-Internal-Key) ---
 app.get("/api/internal/allowlist", internalAllowlist)
 
+// --- Relay tunnel routes (Railway-native bot VM connectivity) ---
+// WebSocket upgrade handled separately on the HTTP server (see below).
+// These are the HTTP endpoints for webhook forwarding and status.
+app.post("/relay/hook/:deploymentId", relayWebhook)
+app.get("/relay/status", relayStatus)
+
 // --- Static files & dev proxy ---
 const isDev = process.env.NODE_ENV === "development"
 
@@ -108,4 +116,8 @@ ensureSchema()
   .catch((err) => console.warn("DB schema migration skipped:", err))
 
 console.log(`Server starting on port ${port}`)
-serve({ fetch: app.fetch, port })
+const server = serve({ fetch: app.fetch, port })
+
+// Attach WebSocket upgrade handler for relay tunnels.
+// Handles: GET /relay/tunnel?token=<relay_token> → WebSocket upgrade
+setupRelayWebSocket(server)

@@ -13,6 +13,8 @@ export interface DeployMetadataInput {
   botName: string
   tailscaleAuthKey?: string
   headscaleUrl?: string
+  relayUrl?: string
+  relayToken?: string
 }
 
 export interface BuildInstanceInput {
@@ -25,6 +27,8 @@ export interface BuildInstanceInput {
   machineType?: string
   tailscaleAuthKey?: string
   headscaleUrl?: string
+  relayUrl?: string
+  relayToken?: string
 }
 
 export function sanitizeBotName(input: string): string {
@@ -68,6 +72,14 @@ export function buildMetadataItems(input: DeployMetadataInput): {
     items.push({ key: "HEADSCALE_URL", value: input.headscaleUrl })
   }
 
+  // WebSocket relay: tunnel connectivity without Tailscale/overlay
+  if (input.relayUrl) {
+    items.push({ key: "RELAY_URL", value: input.relayUrl })
+  }
+  if (input.relayToken) {
+    items.push({ key: "RELAY_TOKEN", value: input.relayToken })
+  }
+
   return items
 }
 
@@ -103,6 +115,8 @@ export function buildInstanceRequestBody(input: BuildInstanceInput): unknown {
         botName: input.botName,
         tailscaleAuthKey: input.tailscaleAuthKey,
         headscaleUrl: input.headscaleUrl,
+        relayUrl: input.relayUrl,
+        relayToken: input.relayToken,
       }),
     },
   }

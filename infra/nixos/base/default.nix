@@ -61,9 +61,6 @@ in
 
     programs.nix-ld.enable = true;
 
-    # Tailscale client for overlay network connectivity
-    services.tailscale.enable = true;
-
     environment.systemPackages = with pkgs; [
       curl
       git
@@ -73,7 +70,6 @@ in
       gcc
       gnumake
       aiCliBundle
-      tailscale
     ];
 
     environment.etc."openclaw/skill".source = "${clawfreeRoot}/skill";
@@ -212,49 +208,35 @@ in
       '';
     };
 
-    # Join the Headscale overlay network using metadata-provided auth key.
-    # Enables: inbound webhooks via gateway, outbound proxy via Squid,
-    # MagicDNS resolution (gateway.claw.internal).
-    systemd.services.openclaw-tailscale = {
-      description = "Join Headscale overlay network";
+    # Relay tunnel client — connects outbound to Railway relay server via WebSocket.
+    # Receives Telegram webhooks through the tunnel, forwards to localhost:18789.
+    # No inbound ports needed, no Tailscale, no special network capabilities.
+    systemd.services.openclaw-relay = {
+      description = "WebSocket relay tunnel to Railway";
       wantedBy = [ "multi-user.target" ];
-      after = [ "tailscaled.service" "openclaw-setup.service" ];
-      wants = [ "tailscaled.service" ];
-      requires = [ "tailscaled.service" ];
+      after = [ "openclaw-setup.service" "network-online.target" "openclaw-gateway.service" ];
+      wants = [ "network-online.target" ];
 
-      path = with pkgs; [ bash coreutils curl tailscale jq ];
+      path = with pkgs; [ curl nodejs_22 ];
 
       serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
+        Type = "simple";
+        Restart = "always";
+        RestartSec = 5;
+        # Read relay credentials from metadata at start
+        ExecStartPre = "${pkgs.writeShellScript "fetch-relay-env" ''
+          RELAY_URL="$(curl -fsS -m 5 "${cfg.metadataHost}/RELAY_URL" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
+          RELAY_TOKEN="$(curl -fsS -m 5 "${cfg.metadataHost}/RELAY_TOKEN" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
+          mkdir -p /run/openclaw
+          echo "RELAY_URL=$RELAY_URL" > /run/openclaw/relay.env
+          echo "RELAY_TOKEN=$RELAY_TOKEN" >> /run/openclaw/relay.env
+        ''}";
+        EnvironmentFile = "-/run/openclaw/relay.env";
+        ExecStart = "${pkgs.nodejs_22}/bin/node /etc/openclaw/relay-client/tunnel.mjs";
       };
-
-      script = ''
-        set -euo pipefail
-
-        TAILSCALE_AUTHKEY="$(curl -fsS -m 2 "${cfg.metadataHost}/TAILSCALE_AUTHKEY" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
-        HEADSCALE_URL="$(curl -fsS -m 2 "${cfg.metadataHost}/HEADSCALE_URL" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
-
-        if [ -z "$TAILSCALE_AUTHKEY" ] || [ -z "$HEADSCALE_URL" ]; then
-          echo "No overlay credentials in metadata, skipping Tailscale join."
-          exit 0
-        fi
-
-        # Derive hostname from VM name (set during deploy)
-        VM_NAME="$(curl -fsS -m 2 "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google" 2>/dev/null || echo "bot-unknown")"
-
-        echo "Joining overlay network at $HEADSCALE_URL as $VM_NAME..."
-        tailscale up \
-          --login-server="$HEADSCALE_URL" \
-          --authkey="$TAILSCALE_AUTHKEY" \
-          --hostname="$VM_NAME" \
-          --accept-routes \
-          --accept-dns=true
-
-        echo "Overlay network joined. Status:"
-        tailscale status || true
-      '';
     };
+
+    environment.etc."openclaw/relay-client/tunnel.mjs".source = "${clawfreeRoot}/infra/relay-client/tunnel.mjs";
 
     systemd.services.openclaw-gateway = {
       description = "OpenClaw gateway";
@@ -268,12 +250,6 @@ in
         OPENCLAW_CONFIG_PATH = configPath;
         OPENCLAW_GATEWAY_TOKEN = "claw-free-local-token";
         PATH = lib.mkForce clawPath;
-        # Route outbound HTTP through gateway's Squid proxy (overlay network).
-        # gateway.claw.internal resolves via MagicDNS when Tailscale is connected.
-        # If overlay is not configured, these are harmless (connection refused = direct).
-        HTTPS_PROXY = "http://gateway.claw.internal:3128";
-        HTTP_PROXY = "http://gateway.claw.internal:3128";
-        NO_PROXY = "localhost,127.0.0.1,metadata.google.internal";
       };
 
       serviceConfig = {

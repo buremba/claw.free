@@ -72,6 +72,10 @@ export async function deployStart(c: Context): Promise<Response> {
     }
   }
 
+  // Generate relay tunnel token (Railway-native connectivity)
+  const relayToken = crypto.randomUUID()
+  const relayUrl = process.env.RELAY_URL ?? process.env.BASE_URL
+
   const vmRes = await fetch(
     `https://compute.googleapis.com/compute/v1/projects/${projectId}/zones/${zone}/instances`,
     {
@@ -87,6 +91,8 @@ export async function deployStart(c: Context): Promise<Response> {
           sourceImage,
           tailscaleAuthKey,
           headscaleUrl: process.env.HEADSCALE_URL,
+          relayUrl,
+          relayToken,
         }),
       ),
     },
@@ -114,7 +120,25 @@ export async function deployStart(c: Context): Promise<Response> {
     botUsername: null,
     projectId, vmName, vmZone: zone,
     operationName: operation.name, status: "creating",
+    relayToken,
   })
+
+  // Set Telegram webhook to relay endpoint
+  if (relayUrl) {
+    const webhookUrl = `${relayUrl}/relay/hook/${deploymentId}`
+    try {
+      await fetch(
+        `https://api.telegram.org/bot${telegramToken}/setWebhook`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: webhookUrl }),
+        },
+      )
+    } catch (err) {
+      console.error("Failed to set Telegram webhook:", err)
+    }
+  }
 
   return c.json({ deploymentId })
 }

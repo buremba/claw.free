@@ -120,9 +120,12 @@ export async function miniCreateBot(c: Context): Promise<Response> {
       tailscaleAuthKey = await createBotPreAuthKey()
     } catch (err) {
       console.error("Failed to create overlay pre-auth key:", err)
-      // Non-fatal: VM will deploy without overlay connectivity
     }
   }
+
+  // Generate relay tunnel token (Railway-native connectivity)
+  const relayToken = crypto.randomUUID()
+  const relayUrl = process.env.RELAY_URL ?? process.env.BASE_URL
 
   const instanceBody = buildInstanceRequestBody({
     zone,
@@ -133,6 +136,8 @@ export async function miniCreateBot(c: Context): Promise<Response> {
     sourceImage,
     tailscaleAuthKey,
     headscaleUrl: process.env.HEADSCALE_URL,
+    relayUrl,
+    relayToken,
   })
 
   const vmRes = await fetch(
@@ -156,7 +161,26 @@ export async function miniCreateBot(c: Context): Promise<Response> {
     vmZone: zone,
     operationName: operation.name,
     status: "creating",
+    relayToken,
   })
+
+  // Set Telegram webhook URL to point to our relay endpoint.
+  // Telegram will POST updates here → relay forwards via WebSocket tunnel → bot VM.
+  if (relayUrl) {
+    const webhookUrl = `${relayUrl}/relay/hook/${deploymentId}`
+    try {
+      await fetch(
+        `https://api.telegram.org/bot${botToken}/setWebhook`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: webhookUrl }),
+        },
+      )
+    } catch (err) {
+      console.error("Failed to set Telegram webhook:", err)
+    }
+  }
 
   return c.json({ deploymentId, botUsername: botInfo.username })
 }
