@@ -56,8 +56,16 @@ export function setupRelayWebSocket(server: any): void {
         return
       }
 
-      // Authenticate
-      const deployment = await getDeploymentByRelayToken(token)
+      // Authenticate — wrap DB call to prevent unhandled rejection on pool errors
+      let deployment
+      try {
+        deployment = await getDeploymentByRelayToken(token)
+      } catch (err) {
+        console.error("Relay tunnel auth DB error:", err)
+        socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n")
+        socket.destroy()
+        return
+      }
       if (!deployment) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
         socket.destroy()

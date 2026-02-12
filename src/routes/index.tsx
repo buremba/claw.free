@@ -428,7 +428,7 @@ function Home() {
         <p className="text-muted-foreground mt-3 text-lg">
           One-click deploy your own 24/7 AI assistant into your cloud account.
           <br />
-          No servers to manage. We never see your prompts or API tokens.
+          No servers to manage. No public IP needed. We never see your prompts or API tokens.
         </p>
       </div>
 
@@ -756,19 +756,10 @@ function Home() {
                         Deployment complete!
                       </p>
                       <p className="text-muted-foreground">
-                        Your VM is running in your GCP project.
+                        Your VM is running in your GCP project. Telegram
+                        webhooks are delivered through a secure relay tunnel
+                        &mdash; no public IP or firewall rules needed.
                       </p>
-                      <p className="text-muted-foreground">
-                        Network mode: private by default (no public gateway URL).
-                      </p>
-                      {deployStatus.ip && (
-                        <p className="text-muted-foreground">
-                          Existing public IP detected:{" "}
-                          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-                            {deployStatus.ip}
-                          </code>
-                        </p>
-                      )}
                     </div>
 
                     <div className="rounded-lg border bg-muted/30 p-4 text-sm space-y-1.5 text-muted-foreground">
@@ -786,25 +777,6 @@ function Home() {
                         3. Follow the auth instructions your bot sends you
                       </p>
                       <p>4. Start chatting!</p>
-                    </div>
-
-                    <div className="rounded-lg border bg-muted/30 p-4 text-sm space-y-3 text-muted-foreground">
-                      <p className="font-medium text-foreground">
-                        Access options
-                      </p>
-                      <p>
-                        Default (recommended): use your bot from Telegram only.
-                        No public gateway URL needed.
-                      </p>
-                      <p>
-                        Private admin access: enable Tailscale or GCP IAP to
-                        reach this VM securely without exposing it publicly.
-                      </p>
-                      <p>
-                        Public URL (advanced): use Cloudflare Tunnel or
-                        Tailscale Funnel if you need internet access. Keep this
-                        optional and protect access with auth.
-                      </p>
                     </div>
                   </div>
                 )}
@@ -853,13 +825,29 @@ function Home() {
               : `You only pay for AI usage through ${providerName ? `your ${providerName} subscription or API plan` : "your AI provider"}.`}
           </FaqItem>
 
+          <FaqItem title="How does the bot receive messages?">
+            Your bot VM connects outbound to our relay server via a WebSocket
+            tunnel. Telegram sends webhooks to the relay, which forwards them
+            through the tunnel to your VM. No public IP, no firewall rules, no
+            port forwarding needed &mdash; just an outbound connection from your VM.
+          </FaqItem>
+
           <FaqItem title="Is this secure?">
             We never see your prompts or API tokens — you log in with{" "}
             <span className="text-foreground font-medium">
               {providerName ?? "your AI provider"}
             </span>{" "}
-            directly on your server. We use Google OAuth to provision your VM but
-            your API keys and conversations stay on your server.
+            directly on your server. Telegram webhooks are verified with a
+            per-deployment secret token. The relay tunnel is authenticated with a
+            unique token and only forwards webhook payloads &mdash; it never
+            stores messages.
+          </FaqItem>
+
+          <FaqItem title="Can I also use the Telegram Mini App?">
+            Yes! Open{" "}
+            <span className="text-foreground font-medium">@ClawFreeBot</span>
+            {" "}in Telegram and tap the Mini App button. You can deploy and manage
+            bots directly from Telegram without leaving the app.
           </FaqItem>
         </div>
       </div>

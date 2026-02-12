@@ -108,12 +108,22 @@ if (isDev) {
   app.use("*", serveStatic({ root: distRoot, path: "/index.html" }))
 }
 
+// --- Global error handlers ---
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled Rejection:", reason)
+})
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err)
+  process.exit(1)
+})
+
 // --- Start server ---
 const port = Number(process.env.PORT ?? 8788)
 
 ensureSchema()
   .then(() => console.log("DB schema ensured"))
-  .catch((err) => console.warn("DB schema migration skipped:", err))
+  .catch((err) => console.error("DB schema migration failed:", err))
 
 console.log(`Server starting on port ${port}`)
 const server = serve({ fetch: app.fetch, port })
