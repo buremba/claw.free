@@ -15,6 +15,7 @@ import { deployExisting } from "./routes/deploy-existing.js"
 import { telegramDetectUser } from "./routes/telegram-detect-user.js"
 import { miniAuth } from "./routes/mini-auth.js"
 import { miniListBots, miniGetBot, miniCreateBot, miniDeleteBot, miniValidateToken } from "./routes/mini-bots.js"
+import { internalAllowlist } from "./routes/internal-allowlist.js"
 import { rateLimit } from "./lib/rate-limit.js"
 import { ensureSchema } from "./db.js"
 
@@ -64,6 +65,9 @@ app.post("/api/mini/bots", rateLimit(6, 600_000), miniCreateBot)
 app.get("/api/mini/bots/:id", miniGetBot)
 app.delete("/api/mini/bots/:id", miniDeleteBot)
 app.post("/api/mini/validate-token", rateLimit(10, 60_000), miniValidateToken)
+
+// --- Internal routes (gateway → API, authenticated via X-Internal-Key) ---
+app.get("/api/internal/allowlist", internalAllowlist)
 
 // --- Static files & dev proxy ---
 const isDev = process.env.NODE_ENV === "development"

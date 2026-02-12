@@ -13,6 +13,12 @@ import {
   generateVmName,
   sanitizeBotName,
 } from "../lib/deploy.js"
+import {
+  createBotPreAuthKey,
+  deleteNode,
+  findNodeByHostname,
+  isHeadscaleConfigured,
+} from "../lib/headscale.js"
 
 const MAX_BOT_NAME_LENGTH = 255
 
@@ -107,6 +113,17 @@ export async function miniCreateBot(c: Context): Promise<Response> {
     "Content-Type": "application/json",
   }
 
+  // Generate overlay network pre-auth key (if Headscale is configured)
+  let tailscaleAuthKey: string | undefined
+  if (isHeadscaleConfigured()) {
+    try {
+      tailscaleAuthKey = await createBotPreAuthKey()
+    } catch (err) {
+      console.error("Failed to create overlay pre-auth key:", err)
+      // Non-fatal: VM will deploy without overlay connectivity
+    }
+  }
+
   const instanceBody = buildInstanceRequestBody({
     zone,
     vmName,
@@ -114,6 +131,8 @@ export async function miniCreateBot(c: Context): Promise<Response> {
     telegramToken: botToken,
     botName: normalizedBotName,
     sourceImage,
+    tailscaleAuthKey,
+    headscaleUrl: process.env.HEADSCALE_URL,
   })
 
   const vmRes = await fetch(
@@ -149,6 +168,14 @@ export async function miniDeleteBot(c: Context): Promise<Response> {
   const deployment = await getDeployment(c.req.param("id"))
   if (!deployment || deployment.userId !== auth.userId) {
     return c.json({ error: "Not found" }, 404)
+  }
+
+  // Remove from overlay network (best effort)
+  if (isHeadscaleConfigured() && deployment.vmName) {
+    try {
+      const node = await findNodeByHostname(deployment.vmName)
+      if (node) await deleteNode(node.nodeId)
+    } catch { /* best effort */ }
   }
 
   // Delete GCP VM if it exists
