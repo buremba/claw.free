@@ -14,6 +14,17 @@ import {
   type TunnelSocket,
 } from "./relay.js"
 
+type UpgradeServer = {
+  on(
+    event: "upgrade",
+    listener: (
+      req: import("node:http").IncomingMessage,
+      socket: import("node:stream").Duplex,
+      head: Buffer,
+    ) => void,
+  ): unknown
+}
+
 // Thin TunnelSocket wrapper around the ws WebSocket
 function wrapWs(ws: WebSocket): TunnelSocket {
   return {
@@ -39,7 +50,7 @@ function isValidTunnelResponse(msg: unknown): msg is TunnelResponse {
 // Max WebSocket message size (1 MB) — prevents memory exhaustion from oversized payloads
 const MAX_MESSAGE_SIZE = 1024 * 1024
 
-export function setupRelayWebSocket(server: import("node:http").Server): void {
+export function setupRelayWebSocket(server: UpgradeServer): void {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_SIZE })
 
   server.on("upgrade", async (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => {
