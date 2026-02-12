@@ -93,6 +93,13 @@ const PROVIDER_NAMES: Record<LlmProvider, string> = {
   openai: "OpenAI",
 }
 
+interface TelegramBotLink {
+  url: string
+  handle: string
+}
+
+const TELEGRAM_BOT_LINK = resolveTelegramBotLink(import.meta.env.VITE_TELEGRAM_BOT_URL)
+
 function Home() {
   const search = Route.useSearch()
 
@@ -430,6 +437,20 @@ function Home() {
           <br />
           No servers to manage. No public IP needed. We never see your prompts or API tokens.
         </p>
+        {TELEGRAM_BOT_LINK && (
+          <p className="mt-4 text-sm text-muted-foreground">
+            Prefer Telegram-first setup? Open{" "}
+            <a
+              href={TELEGRAM_BOT_LINK.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline font-medium"
+            >
+              {TELEGRAM_BOT_LINK.handle}
+            </a>
+            {" "}to create and manage bots directly from Telegram.
+          </p>
+        )}
       </div>
 
       {/* Welcome + existing bots — only when logged in */}
@@ -845,7 +866,20 @@ function Home() {
 
           <FaqItem title="Can I also use the Telegram Mini App?">
             Yes! Open{" "}
-            <span className="text-foreground font-medium">@ClawFreeBot</span>
+            {TELEGRAM_BOT_LINK
+              ? (
+                <a
+                  href={TELEGRAM_BOT_LINK.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-foreground font-medium underline"
+                >
+                  {TELEGRAM_BOT_LINK.handle}
+                </a>
+              )
+              : (
+                <span className="text-foreground font-medium">our Telegram bot</span>
+              )}
             {" "}in Telegram and tap the Mini App button. You can deploy and manage
             bots directly from Telegram without leaving the app.
           </FaqItem>
@@ -853,6 +887,42 @@ function Home() {
       </div>
     </div>
   )
+}
+
+function resolveTelegramBotLink(raw: string | undefined): TelegramBotLink | null {
+  const value = raw?.trim()
+  if (!value) return null
+
+  const normalized = value.startsWith("@")
+    ? `https://t.me/${value.slice(1)}`
+    : /^https?:\/\//i.test(value)
+      ? value
+      : value.includes("/")
+        ? `https://${value}`
+        : `https://t.me/${value}`
+
+  try {
+    const url = new URL(normalized)
+    const host = url.hostname.toLowerCase()
+    if (
+      host !== "t.me" &&
+      host !== "www.t.me" &&
+      host !== "telegram.me" &&
+      host !== "www.telegram.me"
+    ) {
+      return null
+    }
+
+    const firstPathPart = url.pathname.split("/").filter(Boolean)[0]
+    if (!firstPathPart) return null
+    const handle = firstPathPart.startsWith("@")
+      ? firstPathPart
+      : `@${firstPathPart}`
+
+    return { url: normalized, handle }
+  } catch {
+    return null
+  }
 }
 
 function FaqItem({

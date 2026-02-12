@@ -58,6 +58,9 @@ Minimum required values for Google login flow:
 - `DATABASE_URL` (needed for OAuth callback persistence)
 - `COOKIE_SECRET` (required in production; optional in local dev)
 
+Optional frontend value:
+- `VITE_TELEGRAM_BOT_URL` (public link/handle shown on landing page, e.g. `@ClawFreeBot` or `https://t.me/ClawFreeBot`)
+
 `npm run dev` now uses `process-compose` to run both services with hot reload:
 - `landing`: Vite dev server (frontend HMR)
 - `api`: `tsx watch server/index.ts` (automatic API reload on file changes)
