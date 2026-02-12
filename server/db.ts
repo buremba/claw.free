@@ -169,6 +169,7 @@ export interface Deployment {
   vmIp: string | null
   operationName: string | null
   relayToken: string | null
+  webhookSecret: string | null
   status: string
   error: string | null
   createdAt: Date
@@ -185,17 +186,19 @@ export async function createDeployment(input: {
   operationName: string | null
   status: string
   relayToken?: string
+  webhookSecret?: string
 }): Promise<Deployment> {
   const now = new Date()
   const result = await pool.query<Deployment>(
     `INSERT INTO deployment (id, user_id, bot_username, cloud_provider, project_id,
-       vm_name, vm_zone, operation_name, relay_token, status, created_at, updated_at)
-     VALUES ($1, $2, $3, 'gcp', $4, $5, $6, $7, $8, $9, $10, $11)
+       vm_name, vm_zone, operation_name, relay_token, webhook_secret, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'gcp', $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING *`,
     [
       input.id, input.userId, input.botUsername,
       input.projectId, input.vmName, input.vmZone, input.operationName,
-      input.relayToken ?? null, input.status, now, now,
+      input.relayToken ?? null, input.webhookSecret ?? null,
+      input.status, now, now,
     ],
   )
   return result.rows[0]
@@ -287,14 +290,18 @@ export async function ensureSchema(): Promise<void> {
       vm_zone TEXT,
       vm_ip TEXT,
       operation_name TEXT,
-      relay_token TEXT,
+      relay_token TEXT UNIQUE,
+      webhook_secret TEXT,
       status TEXT DEFAULT 'pending',
       error TEXT,
       created_at TIMESTAMPTZ DEFAULT now(),
       updated_at TIMESTAMPTZ DEFAULT now()
     );
 
-    -- Migration: add relay_token to existing deployments
+    -- Migrations for existing deployments
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS relay_token TEXT;
+    ALTER TABLE deployment ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_relay_token
+      ON deployment(relay_token) WHERE relay_token IS NOT NULL;
   `)
 }

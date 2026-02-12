@@ -8,6 +8,7 @@ import {
   registerTunnel,
   unregisterTunnel,
   handleTunnelResponse,
+  touchTunnel,
   type TunnelResponse,
   type TunnelSocket,
 } from "./relay.js"
@@ -20,63 +21,92 @@ function wrapWs(ws: import("ws").WebSocket): TunnelSocket {
   }
 }
 
+/**
+ * Validate that a parsed message has the shape of a TunnelResponse.
+ */
+function isValidTunnelResponse(msg: unknown): msg is TunnelResponse {
+  if (typeof msg !== "object" || msg === null) return false
+  const obj = msg as Record<string, unknown>
+  return (
+    typeof obj.id === "string" &&
+    typeof obj.status === "number" &&
+    typeof obj.headers === "object" && obj.headers !== null &&
+    typeof obj.body === "string"
+  )
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function setupRelayWebSocket(server: any): void {
   const wss = new WebSocketServer({ noServer: true })
 
   server.on("upgrade", async (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host}`)
+    try {
+      const url = new URL(req.url ?? "/", `http://${req.headers.host}`)
 
-    // Only handle /relay/tunnel upgrades
-    if (url.pathname !== "/relay/tunnel") {
-      socket.destroy()
-      return
-    }
+      // Only handle /relay/tunnel upgrades
+      if (url.pathname !== "/relay/tunnel") {
+        socket.destroy()
+        return
+      }
 
-    const token = url.searchParams.get("token")
-    if (!token) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
-      socket.destroy()
-      return
-    }
+      const token = url.searchParams.get("token")
+      if (!token) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
+        socket.destroy()
+        return
+      }
 
-    // Authenticate
-    const deployment = await getDeploymentByRelayToken(token)
-    if (!deployment) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
-      socket.destroy()
-      return
-    }
+      // Authenticate
+      const deployment = await getDeploymentByRelayToken(token)
+      if (!deployment) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
+        socket.destroy()
+        return
+      }
 
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      const wrapped = wrapWs(ws)
-      const deploymentId = deployment.id
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        const wrapped = wrapWs(ws)
+        const deploymentId = deployment.id
 
-      registerTunnel(deploymentId, wrapped)
-      console.log(`Tunnel connected: ${deploymentId}`)
+        registerTunnel(deploymentId, wrapped)
+        console.log(`Tunnel connected: ${deploymentId}`)
 
-      ws.on("message", (data) => {
-        try {
-          const msg = JSON.parse(data.toString())
-          // Ignore heartbeat pings
-          if (msg.type === "ping") {
-            ws.send(JSON.stringify({ type: "pong" }))
-            return
+        ws.on("message", (data) => {
+          try {
+            const msg = JSON.parse(data.toString()) as Record<string, unknown>
+
+            // Handle heartbeat pings
+            if (msg.type === "ping") {
+              touchTunnel(deploymentId)
+              ws.send(JSON.stringify({ type: "pong" }))
+              return
+            }
+
+            // Validate response structure before processing
+            if (!isValidTunnelResponse(msg)) {
+              console.error(`Malformed tunnel response from ${deploymentId}:`, JSON.stringify(msg).slice(0, 200))
+              return
+            }
+
+            handleTunnelResponse(deploymentId, msg)
+          } catch (err) {
+            console.error(`Invalid tunnel message from ${deploymentId}:`, err)
           }
-          handleTunnelResponse(deploymentId, msg as TunnelResponse)
-        } catch (err) {
-          console.error(`Invalid tunnel message from ${deploymentId}:`, err)
-        }
-      })
+        })
 
-      ws.on("close", () => {
-        unregisterTunnel(deploymentId, wrapped)
-        console.log(`Tunnel disconnected: ${deploymentId}`)
-      })
+        ws.on("close", () => {
+          unregisterTunnel(deploymentId, wrapped)
+          console.log(`Tunnel disconnected: ${deploymentId}`)
+        })
 
-      ws.on("error", () => {
-        unregisterTunnel(deploymentId, wrapped)
+        ws.on("error", (err) => {
+          console.error(`Tunnel WebSocket error for ${deploymentId}:`, err)
+          unregisterTunnel(deploymentId, wrapped)
+        })
       })
-    })
+    } catch (err) {
+      console.error("Relay WebSocket upgrade error:", err)
+      try { socket.destroy() } catch { /* ignore */ }
+    }
   })
 }

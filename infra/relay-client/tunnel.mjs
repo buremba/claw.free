@@ -19,11 +19,12 @@ const MIN_BACKOFF_MS = 1000
 const MAX_BACKOFF_MS = 30000
 const BACKOFF_MULTIPLIER = 2
 
-// Heartbeat interval (keep the connection alive through Railway's proxy)
+// Heartbeat interval — keeps connection alive through Railway's proxy (55s idle timeout)
 const HEARTBEAT_INTERVAL_MS = 25000
 
 let backoffMs = MIN_BACKOFF_MS
 let heartbeatTimer = null
+let currentWs = null // Track the active WebSocket to avoid stale references
 
 async function getConfig() {
   // Try env vars first (set directly or via systemd)
@@ -83,23 +84,41 @@ async function forwardToBot(request) {
   }
 }
 
+function clearHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+}
+
+function startHeartbeat(ws) {
+  clearHeartbeat()
+  heartbeatTimer = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: "ping" }))
+      } catch {
+        // Send failed — close event will handle reconnect
+        clearHeartbeat()
+      }
+    } else {
+      // Not open anymore, stop sending heartbeats
+      clearHeartbeat()
+    }
+  }, HEARTBEAT_INTERVAL_MS)
+}
+
 function connect(relayUrl, relayToken) {
   const wsUrl = relayUrl.replace(/^http/, "ws") + `/relay/tunnel?token=${relayToken}`
   console.log(`Connecting to relay: ${relayUrl}/relay/tunnel`)
 
   const ws = new WebSocket(wsUrl)
+  currentWs = ws
 
   ws.addEventListener("open", () => {
     console.log("Tunnel connected")
     backoffMs = MIN_BACKOFF_MS
-
-    // Start heartbeat to keep connection alive
-    if (heartbeatTimer) clearInterval(heartbeatTimer)
-    heartbeatTimer = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "ping" }))
-      }
-    }, HEARTBEAT_INTERVAL_MS)
+    startHeartbeat(ws)
   })
 
   ws.addEventListener("message", async (evt) => {
@@ -107,7 +126,7 @@ function connect(relayUrl, relayToken) {
     try {
       request = JSON.parse(typeof evt.data === "string" ? evt.data : evt.data.toString())
     } catch {
-      console.error("Invalid message from relay:", evt.data)
+      console.error("Invalid message from relay:", typeof evt.data === "string" ? evt.data.slice(0, 200) : "[binary]")
       return
     }
 
@@ -117,15 +136,23 @@ function connect(relayUrl, relayToken) {
     // Forward webhook to local bot
     const response = await forwardToBot(request)
 
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(response))
+    // Only send response if this is still the active connection
+    if (ws === currentWs && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(response))
+      } catch {
+        console.error("Failed to send response back through tunnel")
+      }
     }
   })
 
   ws.addEventListener("close", (evt) => {
     console.log(`Tunnel closed: code=${evt.code} reason=${evt.reason || "none"}`)
-    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
-    scheduleReconnect(relayUrl, relayToken)
+    clearHeartbeat()
+    // Only reconnect if this is still the active WebSocket
+    if (ws === currentWs) {
+      scheduleReconnect(relayUrl, relayToken)
+    }
   })
 
   ws.addEventListener("error", (err) => {

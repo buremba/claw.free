@@ -9,6 +9,9 @@ import {
 /**
  * Webhook receiver — Telegram sends webhooks here.
  * POST /relay/hook/:deploymentId
+ *
+ * Validates X-Telegram-Bot-Api-Secret-Token against the stored webhook_secret
+ * before forwarding through the tunnel.
  */
 export async function relayWebhook(c: Context): Promise<Response> {
   const deploymentId = c.req.param("deploymentId")
@@ -18,16 +21,25 @@ export async function relayWebhook(c: Context): Promise<Response> {
     return c.json({ error: "Unknown deployment" }, 404)
   }
 
+  // Validate webhook secret — Telegram includes this header on every webhook call
+  // when secret_token was set via setWebhook. Prevents spoofed webhook requests.
+  const receivedSecret = c.req.header("x-telegram-bot-api-secret-token")
+  if (deployment.webhookSecret) {
+    if (!receivedSecret || receivedSecret !== deployment.webhookSecret) {
+      return c.json({ error: "Invalid webhook secret" }, 403)
+    }
+  }
+
   if (!isTunnelConnected(deploymentId)) {
-    // Telegram will retry — return 502 so it knows to try again
-    return c.json({ error: "Bot not connected" }, 502)
+    // 503 = service temporarily unavailable (bot is booting or reconnecting).
+    // Telegram retries 503s. 502 would imply our infrastructure is broken.
+    return c.json({ error: "Bot not connected" }, 503)
   }
 
   // Forward the entire HTTP request through the tunnel
   const body = await c.req.text()
   const headers: Record<string, string> = {}
   c.req.raw.headers.forEach((value, key) => {
-    // Only forward relevant headers
     if (key.startsWith("content-") || key === "x-telegram-bot-api-secret-token") {
       headers[key] = value
     }
@@ -49,10 +61,12 @@ export async function relayWebhook(c: Context): Promise<Response> {
 /**
  * Relay status endpoint — shows connected tunnels.
  * GET /relay/status
+ * Requires X-Internal-Key header when INTERNAL_API_KEY is set.
  */
 export async function relayStatus(c: Context): Promise<Response> {
   const internalKey = process.env.INTERNAL_API_KEY
-  if (internalKey && c.req.header("X-Internal-Key") !== internalKey) {
+  // Require key if configured; deny if not configured (don't expose by default)
+  if (!internalKey || c.req.header("X-Internal-Key") !== internalKey) {
     return c.json({ error: "Unauthorized" }, 401)
   }
 

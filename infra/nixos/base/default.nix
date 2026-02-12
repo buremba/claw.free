@@ -221,18 +221,21 @@ in
 
       serviceConfig = {
         Type = "simple";
-        Restart = "always";
-        RestartSec = 5;
-        # Read relay credentials from metadata at start
-        ExecStartPre = "${pkgs.writeShellScript "fetch-relay-env" ''
-          RELAY_URL="$(curl -fsS -m 5 "${cfg.metadataHost}/RELAY_URL" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
-          RELAY_TOKEN="$(curl -fsS -m 5 "${cfg.metadataHost}/RELAY_TOKEN" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
-          mkdir -p /run/openclaw
-          echo "RELAY_URL=$RELAY_URL" > /run/openclaw/relay.env
-          echo "RELAY_TOKEN=$RELAY_TOKEN" >> /run/openclaw/relay.env
+        Restart = "on-failure";
+        RestartSec = 10;
+        # Wrapper script: fetch credentials from metadata on every start, then exec tunnel.
+        # This handles reboots, restarts, and metadata changes without EnvironmentFile races.
+        ExecStart = "${pkgs.writeShellScript "openclaw-relay-start" ''
+          export RELAY_URL="$(curl -fsS -m 5 "${cfg.metadataHost}/RELAY_URL" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
+          export RELAY_TOKEN="$(curl -fsS -m 5 "${cfg.metadataHost}/RELAY_TOKEN" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
+
+          if [ -z "$RELAY_URL" ] || [ -z "$RELAY_TOKEN" ]; then
+            echo "No RELAY_URL or RELAY_TOKEN in metadata, not starting relay."
+            exit 1
+          fi
+
+          exec ${pkgs.nodejs_22}/bin/node /etc/openclaw/relay-client/tunnel.mjs
         ''}";
-        EnvironmentFile = "-/run/openclaw/relay.env";
-        ExecStart = "${pkgs.nodejs_22}/bin/node /etc/openclaw/relay-client/tunnel.mjs";
       };
     };
 

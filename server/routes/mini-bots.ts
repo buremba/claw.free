@@ -123,8 +123,9 @@ export async function miniCreateBot(c: Context): Promise<Response> {
     }
   }
 
-  // Generate relay tunnel token (Railway-native connectivity)
+  // Generate relay tunnel token + webhook secret (Railway-native connectivity)
   const relayToken = crypto.randomUUID()
+  const webhookSecret = crypto.randomUUID()
   const relayUrl = process.env.RELAY_URL ?? process.env.BASE_URL
 
   const instanceBody = buildInstanceRequestBody({
@@ -162,10 +163,11 @@ export async function miniCreateBot(c: Context): Promise<Response> {
     operationName: operation.name,
     status: "creating",
     relayToken,
+    webhookSecret,
   })
 
-  // Set Telegram webhook URL to point to our relay endpoint.
-  // Telegram will POST updates here → relay forwards via WebSocket tunnel → bot VM.
+  // Set Telegram webhook URL with secret token for signature verification.
+  // Telegram includes X-Telegram-Bot-Api-Secret-Token header on every webhook.
   if (relayUrl) {
     const webhookUrl = `${relayUrl}/relay/hook/${deploymentId}`
     try {
@@ -174,7 +176,7 @@ export async function miniCreateBot(c: Context): Promise<Response> {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: webhookUrl }),
+          body: JSON.stringify({ url: webhookUrl, secret_token: webhookSecret }),
         },
       )
     } catch (err) {
