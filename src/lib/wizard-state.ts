@@ -11,12 +11,16 @@ export function buildAuthUrl(params: {
   provider: string
   channel: string
   cloud: string
+  upgrade?: "service-management" | "project-read"
 }): string {
   const qs = new URLSearchParams({
     provider: params.provider,
     channel: params.channel,
     cloud: params.cloud,
   })
+  if (params.upgrade) {
+    qs.set("upgrade", params.upgrade)
+  }
   return `/api/auth/google?${qs.toString()}`
 }
 

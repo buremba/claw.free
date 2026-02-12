@@ -3,7 +3,6 @@ let
   cfg = config.services.clawFree;
 
   stateDir = "/var/lib/openclaw";
-  npmPrefix = "${stateDir}/npm-global";
   homeDir = "${stateDir}/home";
   configDir = "${homeDir}/.openclaw";
   configPath = "${configDir}/openclaw.json";
@@ -12,7 +11,35 @@ let
   providerEnvPath = "${stateDir}/provider.env";
   setupMarker = "${stateDir}/.setup-complete";
   guestAttributeSetupUrl = "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/openclaw/setup";
-  aiToolsMarker = "${stateDir}/.ai-clis-installed";
+  aiCliBundle = pkgs.buildNpmPackage {
+    pname = "openclaw-ai-tools";
+    version = "1.0.0";
+    src = "${clawfreeRoot}/infra/nixos/base/ai-tools";
+    npmDepsHash = "sha256-QH0nFKOlwjMaAhCq7oRv7WEvKIG5zBd6p1ViYJNYFxY=";
+    nodejs = pkgs.nodejs_22;
+    makeCacheWritable = true;
+    npmFlags = [ "--ignore-scripts" ];
+    nativeBuildInputs = [
+      pkgs.pkg-config
+    ];
+    buildInputs = [
+      pkgs.libsecret
+    ];
+    dontNpmBuild = true;
+    installPhase = ''
+      runHook preInstall
+
+      mkdir -p "$out/lib" "$out/bin"
+      cp -r node_modules "$out/lib/"
+      ln -s "$out/lib/node_modules/.bin/claude" "$out/bin/claude"
+      ln -s "$out/lib/node_modules/.bin/codex" "$out/bin/codex"
+      ln -s "$out/lib/node_modules/.bin/gemini" "$out/bin/gemini"
+      ln -s "$out/lib/node_modules/.bin/openclaw" "$out/bin/openclaw"
+
+      runHook postInstall
+    '';
+  };
+  clawPath = "${aiCliBundle}/bin:/run/current-system/sw/bin";
 in
 {
   options.services.clawFree = {
@@ -49,6 +76,7 @@ in
       git
       jq
       nodejs_22
+      aiCliBundle
     ];
 
     environment.etc."openclaw/provider/server.js".text = builtins.readFile "${clawfreeRoot}/provider/server.js";
@@ -57,8 +85,6 @@ in
 
     systemd.tmpfiles.rules = [
       "d ${stateDir} 0755 root root -"
-      "d ${stateDir}/.npm-cache 0755 root root -"
-      "d ${npmPrefix} 0755 root root -"
       "d ${homeDir} 0755 root root -"
       "d ${configDir} 0755 root root -"
       "d ${workspaceDir} 0755 root root -"
@@ -70,7 +96,7 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
-      before = [ "claw-free-provider.service" "openclaw-gateway.service" "openclaw-ai-tools.service" ];
+      before = [ "claw-free-provider.service" "openclaw-gateway.service" ];
 
       path = with pkgs; [
         bash
@@ -90,25 +116,6 @@ in
       script = ''
         set -euo pipefail
         SETUP_STATUS_REPORTED=0
-
-        retry() {
-          local attempts="$1"
-          shift
-
-          local try=1
-          while true; do
-            if "$@"; then
-              return 0
-            fi
-
-            if [ "$try" -ge "$attempts" ]; then
-              return 1
-            fi
-
-            sleep $((try * 2))
-            try=$((try + 1))
-          done
-        }
 
         metadata_get() {
           local key="$1"
@@ -147,8 +154,7 @@ in
 
         LLM_PROVIDER="$(metadata_get LLM_PROVIDER "${cfg.defaultProvider}")"
 
-        install -d "${stateDir}" "${stateDir}/.npm-cache" "${npmPrefix}" \
-          "${homeDir}" "${configDir}" "${workspaceDir}" "${providerDir}"
+        install -d "${stateDir}" "${homeDir}" "${configDir}" "${workspaceDir}" "${providerDir}"
 
         cp /etc/openclaw/provider/server.js "${providerDir}/server.js"
         cp /etc/openclaw/provider/package.json "${providerDir}/package.json"
@@ -156,11 +162,6 @@ in
         rm -rf "${configDir}/skills/claw-free"
         install -d "${configDir}/skills"
         cp -R /etc/openclaw/skill "${configDir}/skills/claw-free"
-
-        if [ ! -x "${npmPrefix}/bin/openclaw" ]; then
-          retry 3 env npm_config_cache="${stateDir}/.npm-cache" \
-            ${pkgs.nodejs_22}/bin/npm install -g --ignore-scripts --prefix "${npmPrefix}" openclaw@latest
-        fi
 
         ${pkgs.jq}/bin/jq -n \
           --arg telegramToken "$TELEGRAM_TOKEN" \
@@ -228,7 +229,7 @@ in
 
       environment = {
         OPENCLAW_CONFIG_PATH = configPath;
-        PATH = lib.mkForce "${npmPrefix}/bin:/run/current-system/sw/bin";
+        PATH = lib.mkForce clawPath;
       };
 
       serviceConfig = {
@@ -251,43 +252,17 @@ in
       environment = {
         HOME = homeDir;
         OPENCLAW_CONFIG_PATH = configPath;
-        PATH = lib.mkForce "${npmPrefix}/bin:/run/current-system/sw/bin";
+        OPENCLAW_GATEWAY_TOKEN = "claw-free-local-token";
+        PATH = lib.mkForce clawPath;
       };
 
       serviceConfig = {
         Type = "simple";
         WorkingDirectory = homeDir;
-        ExecStart = "${npmPrefix}/bin/openclaw gateway --bind lan --port ${toString cfg.gatewayPort}";
+        ExecStart = "${aiCliBundle}/bin/openclaw gateway --bind lan --port ${toString cfg.gatewayPort}";
         Restart = "always";
         RestartSec = 5;
       };
-    };
-
-    systemd.services.openclaw-ai-tools = {
-      description = "Install Claude/Codex/Gemini CLIs";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "openclaw-setup.service" "network-online.target" ];
-      wants = [ "network-online.target" ];
-
-      serviceConfig = {
-        Type = "oneshot";
-      };
-
-      script = ''
-        set -euo pipefail
-
-        if [ -f "${aiToolsMarker}" ]; then
-          exit 0
-        fi
-
-        if ! env npm_config_cache="${stateDir}/.npm-cache" ${pkgs.nodejs_22}/bin/npm install -g --prefix "${npmPrefix}" \
-          @anthropic-ai/claude-code @openai/codex @google/gemini-cli; then
-          echo "AI CLI installation failed; continuing without blocking gateway startup."
-          exit 0
-        fi
-
-        touch "${aiToolsMarker}"
-      '';
     };
   };
 }

@@ -21,7 +21,6 @@ interface SessionData {
   userName: string
   userEmail: string
   userPicture: string
-  projects: { projectId: string; name: string }[]
 }
 
 interface ExistingVm {
@@ -33,10 +32,50 @@ interface ExistingVm {
   status: string
 }
 
+interface GcpProject {
+  projectId: string
+  name: string
+}
+
 interface DeployStatus {
   status: string
   ip?: string
   error?: string
+}
+
+interface FetchProjectsError {
+  reason?: "missing_scope" | "permission_denied" | "api_error" | "network_error"
+  error?: string
+}
+
+interface PreflightBlocker {
+  type:
+    | "missing_scope"
+    | "missing_permission"
+    | "mfa_required"
+    | "service_disabled"
+    | "propagating"
+    | "unknown"
+  title: string
+  message: string
+  actionKind:
+    | "reconnect_basic"
+    | "reconnect_service_management"
+    | "open_url"
+    | "none"
+  actionUrl?: string
+}
+
+interface PreflightResult {
+  ok: boolean
+  checks: {
+    hasComputeScope: boolean | null
+    hasServiceManagementScope: boolean | null
+    computeApiEnabled: boolean
+    autoEnableAttempted: boolean
+  }
+  blocker?: PreflightBlocker
+  message?: string
 }
 
 export const Route = createFileRoute("/")({
@@ -74,13 +113,12 @@ function Home() {
   const [sessionData, setSessionData] = useState<SessionData | null>(null)
   const [sessionLoading, setSessionLoading] = useState(true)
   const [selectedProject, setSelectedProject] = useState("")
+  const [projects, setProjects] = useState<GcpProject[]>([])
+  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [projectFetchError, setProjectFetchError] = useState<string | null>(null)
   const [existingVms, setExistingVms] = useState<ExistingVm[]>([])
-
-  // Create project state
-  const [showCreateProject, setShowCreateProject] = useState(false)
-  const [newProjectName, setNewProjectName] = useState("")
-  const [creatingProject, setCreatingProject] = useState(false)
-  const [createProjectError, setCreateProjectError] = useState<string | null>(null)
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null)
+  const [preflightLoading, setPreflightLoading] = useState(false)
 
   // Deploy state
   const [deploymentId, setDeploymentId] = useState<string | null>(null)
@@ -100,9 +138,6 @@ function Home() {
         if (!llmProvider) setLlmProvider(data.provider as LlmProvider)
         if (!channel) setChannel(data.channel as Channel)
         if (!cloud) setCloud("gcp")
-        if (data.projects.length === 1) {
-          setSelectedProject(data.projects[0].projectId)
-        }
       })
       .catch(() => {})
       .finally(() => setSessionLoading(false))
@@ -112,16 +147,149 @@ function Home() {
 
   // Fetch existing VMs when logged in
   useEffect(() => {
-    if (!isLoggedIn) return
+    const projectId = selectedProject.trim()
+    if (!isLoggedIn || !projectId) {
+      setExistingVms([])
+      return
+    }
 
-    fetch("/api/deploy/existing")
+    fetch(`/api/deploy/existing?projectId=${encodeURIComponent(projectId)}`)
       .then(async (res) => {
         if (!res.ok) return
         const data = (await res.json()) as { vms: ExistingVm[] }
         setExistingVms(data.vms)
       })
       .catch(() => {})
+  }, [isLoggedIn, selectedProject])
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setProjects([])
+      setProjectsLoading(false)
+      setProjectFetchError(null)
+      setSelectedProject("")
+    }
   }, [isLoggedIn])
+
+  const runPreflight = useCallback(async () => {
+    const projectId = selectedProject.trim()
+    if (!isLoggedIn || cloud !== "gcp" || !projectId) {
+      setPreflight(null)
+      setPreflightLoading(false)
+      return
+    }
+
+    setPreflightLoading(true)
+    try {
+      const res = await fetch("/api/deploy/preflight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      })
+      if (!res.ok) {
+        const errorText = await res.text()
+        setPreflight({
+          ok: false,
+          checks: {
+            hasComputeScope: null,
+            hasServiceManagementScope: null,
+            computeApiEnabled: false,
+            autoEnableAttempted: false,
+          },
+          blocker: {
+            type: "unknown",
+            title: "Preflight failed",
+            message: errorText || "Could not validate project readiness.",
+            actionKind: "none",
+          },
+        })
+        return
+      }
+
+      const data = (await res.json()) as PreflightResult
+      setPreflight(data)
+    } catch {
+      setPreflight({
+        ok: false,
+        checks: {
+          hasComputeScope: null,
+          hasServiceManagementScope: null,
+          computeApiEnabled: false,
+          autoEnableAttempted: false,
+        },
+        blocker: {
+          type: "unknown",
+          title: "Network error",
+          message: "Could not reach preflight check endpoint. Try re-checking.",
+          actionKind: "none",
+        },
+      })
+    } finally {
+      setPreflightLoading(false)
+    }
+  }, [cloud, isLoggedIn, selectedProject])
+
+  useEffect(() => {
+    const projectId = selectedProject.trim()
+    if (!isLoggedIn || cloud !== "gcp" || !projectId) {
+      setPreflight(null)
+      setPreflightLoading(false)
+      return
+    }
+
+    const timer = setTimeout(() => {
+      void runPreflight()
+    }, 350)
+    return () => clearTimeout(timer)
+  }, [cloud, isLoggedIn, runPreflight, selectedProject])
+
+  const handleFetchProjects = useCallback(async () => {
+    if (!isLoggedIn || cloud !== "gcp") return
+
+    setProjectsLoading(true)
+    setProjectFetchError(null)
+    try {
+      const res = await fetch("/api/deploy/projects")
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as FetchProjectsError
+        if (res.status === 403 && data.reason === "missing_scope") {
+          const reconnectUrl = buildAuthUrl({
+            provider: llmProvider ?? "claude",
+            channel: channel ?? "telegram",
+            cloud: "gcp",
+            upgrade: "project-read",
+          })
+          window.location.href = reconnectUrl
+          return
+        }
+
+        setProjectFetchError(data.error ?? "Could not fetch Google Cloud projects.")
+        return
+      }
+
+      const data = (await res.json()) as { projects: GcpProject[] }
+      setProjects(data.projects ?? [])
+      if ((data.projects?.length ?? 0) > 0) {
+        const selected = selectedProject.trim()
+        const hasSelected = Boolean(
+          selected &&
+            data.projects?.some((project) => project.projectId === selected),
+        )
+        if (!hasSelected) {
+          setSelectedProject(data.projects[0].projectId)
+        }
+      }
+      if ((data.projects?.length ?? 0) === 0) {
+        setProjectFetchError(
+          "No active projects found for this account. Check the selected Google account and IAM access.",
+        )
+      }
+    } catch {
+      setProjectFetchError("Could not fetch Google Cloud projects.")
+    } finally {
+      setProjectsLoading(false)
+    }
+  }, [channel, cloud, isLoggedIn, llmProvider, selectedProject])
 
   // Poll deployment status
   useEffect(() => {
@@ -146,7 +314,9 @@ function Home() {
   }, [deploymentId])
 
   const handleDeploy = useCallback(async () => {
-    if (!selectedProject || !telegramToken || !region || !botName.trim()) return
+    const projectId = selectedProject.trim()
+    if (!projectId || !telegramToken || !region || !botName.trim()) return
+    if (!preflight?.ok) return
     setDeploying(true)
     setDeployError(null)
 
@@ -155,7 +325,7 @@ function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          projectId: selectedProject,
+          projectId,
           telegramToken,
           region,
           provider: llmProvider,
@@ -179,62 +349,12 @@ function Home() {
       setDeployError("Failed to start deployment")
       setDeploying(false)
     }
-  }, [selectedProject, telegramToken, region, llmProvider, botName])
-
-  const handleCreateProject = useCallback(async () => {
-    if (!newProjectName.trim()) return
-    setCreatingProject(true)
-    setCreateProjectError(null)
-
-    const projectId = newProjectName
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 30)
-
-    try {
-      const res = await fetch("/api/deploy/create-project", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, displayName: newProjectName.trim() }),
-      })
-
-      const data = (await res.json()) as {
-        projectId?: string
-        name?: string
-        error?: string
-      }
-      if (!res.ok || !data.projectId) {
-        setCreateProjectError(data.error ?? "Failed to create project")
-        setCreatingProject(false)
-        return
-      }
-
-      // Update session data with the new project
-      setSessionData((prev) =>
-        prev
-          ? {
-              ...prev,
-              projects: [
-                ...prev.projects,
-                { projectId: data.projectId!, name: data.name! },
-              ],
-            }
-          : prev,
-      )
-      setSelectedProject(data.projectId)
-      setShowCreateProject(false)
-      setNewProjectName("")
-    } catch {
-      setCreateProjectError("Failed to create project")
-    } finally {
-      setCreatingProject(false)
-    }
-  }, [newProjectName])
+  }, [selectedProject, telegramToken, region, preflight, llmProvider, botName])
 
   const providerName = llmProvider ? PROVIDER_NAMES[llmProvider] : null
   const isFreeProvider = llmProvider === "kimi"
+  const defaultProvider = llmProvider ?? "claude"
+  const defaultChannel = channel ?? "telegram"
 
   // Pre-login: can login when provider + channel + cloud selected
   const canLogin =
@@ -243,15 +363,49 @@ function Home() {
   const authUrl = canLogin
     ? buildAuthUrl({ provider: llmProvider!, channel: channel!, cloud: cloud! })
     : "#"
+  const reconnectBasicUrl = buildAuthUrl({
+    provider: defaultProvider,
+    channel: defaultChannel,
+    cloud: "gcp",
+  })
+  const upgradeAuthUrl = buildAuthUrl({
+    provider: defaultProvider,
+    channel: defaultChannel,
+    cloud: "gcp",
+    upgrade: "service-management",
+  })
 
   // Post-login: can deploy when project + telegram token + region filled
   const canDeploy =
     isLoggedIn &&
-    selectedProject !== "" &&
+    selectedProject.trim() !== "" &&
     botName.trim() !== "" &&
     telegramToken.trim() !== "" &&
+    preflight?.ok === true &&
+    !preflightLoading &&
     !deploying &&
     !deploymentId
+
+  const preflightBlocker = preflight?.ok ? null : preflight?.blocker
+  const preflightPrimaryAction = (() => {
+    if (!preflightBlocker) return null
+    if (preflightBlocker.actionKind === "reconnect_basic") {
+      return { label: "Reconnect Google", href: reconnectBasicUrl }
+    }
+    if (preflightBlocker.actionKind === "reconnect_service_management") {
+      return { label: "Reconnect Google", href: upgradeAuthUrl }
+    }
+    if (preflightBlocker.actionKind === "open_url" && preflightBlocker.actionUrl) {
+      if (preflightBlocker.type === "mfa_required") {
+        return { label: "Open Security Settings", href: preflightBlocker.actionUrl }
+      }
+      if (preflightBlocker.type === "missing_permission") {
+        return { label: "Open IAM", href: preflightBlocker.actionUrl }
+      }
+      return { label: "Open Fix Page", href: preflightBlocker.actionUrl }
+    }
+    return null
+  })()
 
   // Initial loading — check if session cookie exists
   if (sessionLoading) {
@@ -361,57 +515,33 @@ function Home() {
         {/* Cloud selector */}
         <CloudSelector value={cloud} onChange={setCloud} />
 
+        {isLoggedIn && cloud === "gcp" && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/15 dark:text-amber-100">
+            <p className="font-medium text-amber-950 dark:text-amber-50">
+              Google Cloud may require 2-step verification
+            </p>
+            <p className="mt-1">
+              Effective around May 13, 2025, Google Cloud started enforcing MFA
+              for many users. If Google prompts for 2SV, enable it first.
+            </p>
+            <a
+              href="https://myaccount.google.com/security"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-block underline text-amber-800 hover:text-amber-900 dark:text-amber-200 dark:hover:text-amber-100"
+            >
+              Open Google security settings
+            </a>
+          </div>
+        )}
+
         {/* GCP project selector — only post-login */}
         {isLoggedIn && sessionData && cloud === "gcp" && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="project" className="text-base font-semibold">
-                GCP Project
-              </Label>
-              {!showCreateProject && (
-                <button
-                  onClick={() => setShowCreateProject(true)}
-                  className="text-xs text-primary hover:underline"
-                >
-                  Create new project
-                </button>
-              )}
-            </div>
-
-            {showCreateProject ? (
-              <div className="space-y-3">
-                <Input
-                  placeholder="Project name..."
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                  disabled={creatingProject}
-                />
-                {createProjectError && (
-                  <p className="text-xs text-destructive">{createProjectError}</p>
-                )}
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    disabled={!newProjectName.trim() || creatingProject}
-                    onClick={handleCreateProject}
-                  >
-                    {creatingProject ? "Creating..." : "Create"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={creatingProject}
-                    onClick={() => {
-                      setShowCreateProject(false)
-                      setNewProjectName("")
-                      setCreateProjectError(null)
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            ) : sessionData.projects.length > 1 ? (
+            <Label htmlFor="project" className="text-base font-semibold">
+              GCP Project ID
+            </Label>
+            {projects.length > 0 ? (
               <select
                 id="project"
                 value={selectedProject}
@@ -419,21 +549,110 @@ function Home() {
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="">Select a project...</option>
-                {sessionData.projects.map((p) => (
-                  <option key={p.projectId} value={p.projectId}>
-                    {p.name} ({p.projectId})
+                {projects.map((project) => (
+                  <option key={project.projectId} value={project.projectId}>
+                    {project.name} ({project.projectId})
                   </option>
                 ))}
               </select>
-            ) : sessionData.projects.length === 1 ? (
-              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-                {sessionData.projects[0].name} (
-                {sessionData.projects[0].projectId})
-              </div>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                No GCP projects found. Create one above to get started.
+              <Input
+                id="project"
+                type="text"
+                placeholder="my-gcp-project-id"
+                value={selectedProject}
+                onChange={(e) => setSelectedProject(e.target.value)}
+              />
+            )}
+
+            <div className="text-xs text-muted-foreground space-y-1">
+              <p>Where to find Project ID:</p>
+              <p>
+                1. Open{" "}
+                <a
+                  href="https://console.cloud.google.com/cloud-resource-manager"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  Google Cloud Console
+                </a>
               </p>
+              <p>2. Use the top project switcher to select your project</p>
+              <p>3. Open Project settings and copy "Project ID" (not Name/Number)</p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void handleFetchProjects()}
+                disabled={projectsLoading}
+              >
+                {projectsLoading
+                  ? "Fetching projects..."
+                  : "Fetch my Google Cloud projects"}
+              </Button>
+            </div>
+
+            {projectFetchError && (
+              <p className="text-xs text-destructive">{projectFetchError}</p>
+            )}
+
+            {selectedProject.trim() !== "" && (
+              <div
+                className={`rounded-lg border p-4 text-sm space-y-3 ${
+                  preflight?.ok
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-900 dark:border-emerald-400/35 dark:bg-emerald-500/15 dark:text-emerald-100"
+                    : "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/15 dark:text-amber-100"
+                }`}
+              >
+                {preflightLoading ? (
+                  <p>Checking project readiness...</p>
+                ) : preflight?.ok ? (
+                  <p>{preflight.message ?? "Project is ready. You can deploy now."}</p>
+                ) : (
+                  <>
+                    <div className="space-y-1">
+                      <p className="font-medium text-foreground">
+                        {preflightBlocker?.title ?? "Project needs attention"}
+                      </p>
+                      <p>{preflightBlocker?.message ?? "Fix the issue, then re-check."}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {preflightPrimaryAction && (
+                        <Button size="sm" asChild>
+                          <a
+                            href={preflightPrimaryAction.href}
+                            target={
+                              preflightBlocker?.actionKind === "open_url"
+                                ? "_blank"
+                                : undefined
+                            }
+                            rel={
+                              preflightBlocker?.actionKind === "open_url"
+                                ? "noopener noreferrer"
+                                : undefined
+                            }
+                          >
+                            {preflightPrimaryAction.label}
+                          </a>
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void runPreflight()}
+                        disabled={preflightLoading}
+                      >
+                        I fixed it, re-check
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         )}

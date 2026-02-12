@@ -14,7 +14,6 @@ npm_config_cache="${STATE_DIR}/.npm-cache" npm install -g --prefix "${NPM_PREFIX
 echo ""
 echo "Restarting services..."
 systemctl restart claw-free-provider openclaw-gateway
-systemctl start openclaw-ai-tools.service 2>/dev/null || true
 
 echo "Update complete."
 echo "OpenClaw version: $(${OPENCLAW_BIN} --version 2>/dev/null || echo unknown)"

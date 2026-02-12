@@ -16,7 +16,7 @@ Free OpenClaw installer. Deploy your own AI assistant to the cloud — at zero c
 
 ```
 claw.free (web app + API)
-  → Google OAuth (user grants compute/cloud-platform scopes)
+  → Google OAuth (compute by default, requests service.management only when API auto-enable is needed)
   → Backend calls GCP APIs to create a private-by-default VM in user's project
       → e2-micro VM (no external IP by default)
       → OpenClaw + Docker
@@ -79,6 +79,6 @@ src/                    Landing page (React + TanStack Router)
 server/                 API routes (Google auth + GCP VM provisioning)
 provider/               claw-free-provider (bootstrap LLM server)
 skill/                  claw.free management skill for OpenClaw
-startup-script.sh       VM startup script (Nix + Docker + OpenClaw)
 flake.nix               Nix flake for dev environment + VM packages
+infra/nixos/base/       NixOS base module + GCP image build for OpenClaw VMs
 ```

@@ -7,6 +7,7 @@ interface TokenResponse {
   access_token: string
   refresh_token?: string
   expires_in: number
+  scope?: string
 }
 
 interface GoogleUserInfo {
@@ -94,12 +95,20 @@ export async function authCallbackGoogle(c: Context): Promise<Response> {
     return c.text("Could not retrieve email from Google", 400)
   }
 
-  const scopes = [
+  const requestedScopes = [
     "openid",
     "email",
     "https://www.googleapis.com/auth/compute",
-    "https://www.googleapis.com/auth/cloud-platform",
-  ].join(" ")
+  ]
+  if (config.upgrade === "service-management") {
+    requestedScopes.push("https://www.googleapis.com/auth/service.management")
+  }
+  if (config.upgrade === "project-read") {
+    requestedScopes.push(
+      "https://www.googleapis.com/auth/cloudplatformprojects.readonly",
+    )
+  }
+  const scopes = normalizeScopes(tokens.scope ?? requestedScopes.join(" "))
 
   const expiresAt = tokens.expires_in
     ? new Date(Date.now() + tokens.expires_in * 1000)
@@ -146,4 +155,13 @@ export async function authCallbackGoogle(c: Context): Promise<Response> {
   redirectUrl.searchParams.set("cloud", config.cloud)
 
   return c.redirect(redirectUrl.toString(), 302)
+}
+
+function normalizeScopes(raw: string): string {
+  const scopes = raw
+    .split(/\s+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean)
+
+  return [...new Set(scopes)].sort().join(" ")
 }

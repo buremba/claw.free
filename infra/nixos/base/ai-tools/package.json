@@ -1,0 +1,13 @@
+{
+  "name": "openclaw-ai-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned AI CLI bundle for claw.free OpenClaw VMs",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.39",
+    "@google/gemini-cli": "0.28.1",
+    "@openai/codex": "0.98.0",
+    "openclaw": "2026.2.9"
+  }
+}

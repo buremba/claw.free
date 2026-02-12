@@ -25,23 +25,9 @@ export async function deployExisting(c: Context): Promise<Response> {
     return c.json({ error: "Not logged in" }, 401)
   }
 
-  // Fetch projects on-demand
-  let projects: { projectId: string }[] = []
-  try {
-    const projectsRes = await fetch(
-      "https://cloudresourcemanager.googleapis.com/v3/projects:search?query=state:ACTIVE",
-      {
-        headers: { Authorization: `Bearer ${auth.accessToken}` },
-      },
-    )
-    if (projectsRes.ok) {
-      const data = (await projectsRes.json()) as {
-        projects?: { projectId: string }[]
-      }
-      projects = data.projects ?? []
-    }
-  } catch {
-    // Non-critical
+  const projectId = c.req.query("projectId")?.trim()
+  if (!projectId) {
+    return c.json({ vms: [] })
   }
 
   const vms: {
@@ -53,34 +39,34 @@ export async function deployExisting(c: Context): Promise<Response> {
     status: string
   }[] = []
 
-  for (const project of projects) {
-    try {
-      const res = await fetch(
-        `https://compute.googleapis.com/compute/v1/projects/${project.projectId}/aggregated/instances`,
-        {
-          headers: { Authorization: `Bearer ${auth.accessToken}` },
-        },
-      )
-      if (!res.ok) continue
-
-      const list = (await res.json()) as AggregatedList
-      for (const [scopeKey, scope] of Object.entries(list.items ?? {})) {
-        for (const instance of scope.instances ?? []) {
-          if (instance.labels?.openclaw !== "true") continue
-
-          vms.push({
-            projectId: project.projectId,
-            name: instance.name,
-            zone: scopeKey.replace("zones/", ""),
-            ip: instance.networkInterfaces?.[0]?.accessConfigs?.[0]?.natIP ?? "",
-            machineType: parseMachineType(instance.machineType),
-            status: instance.status,
-          })
-        }
-      }
-    } catch {
-      // Skip projects we can't query
+  try {
+    const res = await fetch(
+      `https://compute.googleapis.com/compute/v1/projects/${projectId}/aggregated/instances`,
+      {
+        headers: { Authorization: `Bearer ${auth.accessToken}` },
+      },
+    )
+    if (!res.ok) {
+      return c.json({ vms })
     }
+
+    const list = (await res.json()) as AggregatedList
+    for (const [scopeKey, scope] of Object.entries(list.items ?? {})) {
+      for (const instance of scope.instances ?? []) {
+        if (instance.labels?.openclaw !== "true") continue
+
+        vms.push({
+          projectId,
+          name: instance.name,
+          zone: scopeKey.replace("zones/", ""),
+          ip: instance.networkInterfaces?.[0]?.accessConfigs?.[0]?.natIP ?? "",
+          machineType: parseMachineType(instance.machineType),
+          status: instance.status,
+        })
+      }
+    }
+  } catch {
+    // Non-critical
   }
 
   return c.json({ vms })

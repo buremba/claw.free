@@ -10,12 +10,22 @@ echo "=== claw.free Status ==="
 echo ""
 
 echo "── Services ──"
-for unit in openclaw-setup claw-free-provider openclaw-gateway openclaw-ai-tools; do
+for unit in openclaw-setup claw-free-provider openclaw-gateway; do
   status="$(systemctl is-active "$unit" 2>/dev/null || true)"
   if [ -z "$status" ]; then
     status="not-found"
   fi
   printf "  %-20s %s\n" "$unit" "$status"
+done
+echo ""
+
+echo "── AI CLIs ──"
+for cli in claude codex gemini; do
+  if command -v "$cli" >/dev/null 2>&1; then
+    printf "  %-20s installed\n" "$cli"
+  else
+    printf "  %-20s missing\n" "$cli"
+  fi
 done
 echo ""
 

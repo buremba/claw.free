@@ -8,7 +8,6 @@ import {
   isDeployTimedOut,
   parseMachineType,
   sanitizeBotName,
-  shouldFallbackToDebian,
 } from "./deploy"
 
 describe("sanitizeBotName", () => {
@@ -31,29 +30,27 @@ describe("generateVmName", () => {
 })
 
 describe("buildMetadataItems", () => {
-  it("includes startup script metadata only when provided", () => {
-    const noScript = buildMetadataItems({
+  it("includes required deployment metadata", () => {
+    const items = buildMetadataItems({
       provider: "kimi",
       telegramToken: "token",
       botName: "bot-a",
     })
-    expect(noScript).toContainEqual({
+    expect(items).toContainEqual({
       key: "enable-guest-attributes",
       value: "TRUE",
     })
-    expect(noScript.some((item) => item.key === "startup-script-url")).toBe(
-      false,
-    )
-
-    const withScript = buildMetadataItems({
-      provider: "kimi",
-      telegramToken: "token",
-      botName: "bot-a",
-      startupScriptUrl: "https://example.com/startup.sh",
+    expect(items).toContainEqual({
+      key: "TELEGRAM_TOKEN",
+      value: "token",
     })
-    expect(withScript[0]).toEqual({
-      key: "startup-script-url",
-      value: "https://example.com/startup.sh",
+    expect(items).toContainEqual({
+      key: "LLM_PROVIDER",
+      value: "kimi",
+    })
+    expect(items).toContainEqual({
+      key: "BOT_NAME",
+      value: "bot-a",
     })
   })
 })
@@ -75,7 +72,7 @@ describe("buildInstanceRequestBody", () => {
     }
 
     expect(payload.machineType).toBe(
-      "zones/us-central1-a/machineTypes/e2-micro",
+      "zones/us-central1-a/machineTypes/e2-small",
     )
     expect(payload.labels).toEqual({ openclaw: "true", managedby: "clawfree" })
     expect(payload.networkInterfaces[0]?.network).toBe("global/networks/default")
@@ -102,7 +99,7 @@ describe("buildInstanceRequestBody", () => {
     }) as { machineType: string }
 
     expect(payload.machineType).toBe("zones/us-west1-a/machineTypes/e2-small")
-    expect(DEFAULT_MACHINE_TYPE).toBe("e2-micro")
+    expect(DEFAULT_MACHINE_TYPE).toBe("e2-small")
   })
 })
 
@@ -141,26 +138,5 @@ describe("utility helpers", () => {
 
   it("returns false for undefined createdAt", () => {
     expect(isDeployTimedOut(undefined)).toBe(false)
-  })
-
-  it("detects image failures that should fallback to debian", () => {
-    expect(
-      shouldFallbackToDebian(
-        "Required 'compute.images.useReadOnly' permission for 'projects/owletto'",
-      ),
-    ).toBe(true)
-    expect(
-      shouldFallbackToDebian(
-        "The resource 'projects/x/global/images/family/nixos-openclaw' was not found",
-      ),
-    ).toBe(true)
-    expect(shouldFallbackToDebian("Quota exceeded for this operation")).toBe(
-      false,
-    )
-  })
-
-  it("detects service disabled and access not configured errors", () => {
-    expect(shouldFallbackToDebian("SERVICE_DISABLED: compute.googleapis.com")).toBe(true)
-    expect(shouldFallbackToDebian("accessNotConfigured for project")).toBe(true)
   })
 })

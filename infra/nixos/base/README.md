@@ -7,14 +7,14 @@ This directory contains the first declarative NixOS base for claw.free managed O
 - `openclaw-setup.service`
   - Reads VM metadata (`TELEGRAM_TOKEN`, `LLM_PROVIDER`, `BOT_NAME`)
   - Creates runtime directories under `/var/lib/openclaw`
-  - Installs `openclaw` CLI into `/var/lib/openclaw/npm-global`
   - Writes `/var/lib/openclaw/home/.openclaw/openclaw.json`
 - `claw-free-provider.service`
   - Runs the local bootstrap provider on port `3456`
 - `openclaw-gateway.service`
   - Runs native OpenClaw gateway on port `18789`
-- `openclaw-ai-tools.service`
-  - Installs Claude/Codex/Gemini CLIs asynchronously
+- AI CLIs (OpenClaw/Claude/Codex/Gemini)
+  - Installed declaratively via a pinned Nix package bundle
+  - No runtime npm install during VM boot
 
 ## Build GCP Image
 
@@ -25,3 +25,16 @@ nix build .#gcp-image
 ```
 
 Then upload the produced image artifact to your GCP image family.
+
+## Update pinned CLI versions
+
+```bash
+cd infra/nixos/base/ai-tools
+npm install --save-exact openclaw@<version> @anthropic-ai/claude-code@<version> @openai/codex@<version> @google/gemini-cli@<version>
+```
+
+After updating `package-lock.json`, refresh `npmDepsHash` in `infra/nixos/base/default.nix` by running:
+
+```bash
+nix run nixpkgs#prefetch-npm-deps -- package-lock.json
+```
