@@ -3,6 +3,22 @@ import { Hono } from "hono"
 import { rateLimit } from "./rate-limit"
 
 describe("rateLimit", () => {
+  it("uses the leftmost x-forwarded-for entry as client IP", async () => {
+    const app = new Hono()
+    app.get("/ip", rateLimit(1, 60_000), (c) => c.text("ok"))
+
+    // Two different clients behind same proxy chain should not share the bucket.
+    const r1 = await app.request("/ip", {
+      headers: { "x-forwarded-for": "1.1.1.1, 2.2.2.2" },
+    })
+    const r2 = await app.request("/ip", {
+      headers: { "x-forwarded-for": "3.3.3.3, 2.2.2.2" },
+    })
+
+    expect(r1.status).toBe(200)
+    expect(r2.status).toBe(200)
+  })
+
   it("allows requests under the limit", async () => {
     const app = new Hono()
     app.get("/test", rateLimit(3, 60_000), (c) => c.text("ok"))

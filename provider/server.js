@@ -795,11 +795,8 @@ function listModelsMessage() {
 
 async function handleDone() {
   // Legacy: reached when claw-free was removed from config.
-  // Redirect to management if we have configured providers.
-  if (state.configuredProviders.length > 0) {
-    state.stage = "management";
-    return `Your bot is using the real AI model. You can say "add model" to configure additional providers.${stageMarker("management", state.selectedProvider)}`;
-  }
+  // In that case this provider is no longer reachable from normal chat,
+  // so just return a terminal "done" response.
   return `Setup is already complete. Your bot should be using the real AI model now. If it's not responding, wait a few seconds and try again.${stageMarker("done", state.selectedProvider)}`;
 }
 

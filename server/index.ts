@@ -119,15 +119,28 @@ process.on("uncaughtException", (err) => {
 })
 
 // --- Start server ---
-const port = Number(process.env.PORT ?? 8788)
+async function main(): Promise<void> {
+  try {
+    await ensureSchema()
+    console.log("DB schema ensured")
+  } catch (err) {
+    console.error("DB schema migration failed:", err)
+    if (process.env.NODE_ENV === "production") {
+      process.exit(1)
+    }
+    console.warn("Continuing without ensured DB schema (development mode).")
+  }
 
-ensureSchema()
-  .then(() => console.log("DB schema ensured"))
-  .catch((err) => console.error("DB schema migration failed:", err))
+  const port = Number(process.env.PORT ?? 8788)
+  console.log(`Server starting on port ${port}`)
+  const server = serve({ fetch: app.fetch, port })
 
-console.log(`Server starting on port ${port}`)
-const server = serve({ fetch: app.fetch, port })
+  // Attach WebSocket upgrade handler for relay tunnels.
+  // Handles: GET /relay/tunnel?token=<relay_token> → WebSocket upgrade
+  setupRelayWebSocket(server)
+}
 
-// Attach WebSocket upgrade handler for relay tunnels.
-// Handles: GET /relay/tunnel?token=<relay_token> → WebSocket upgrade
-setupRelayWebSocket(server)
+main().catch((err) => {
+  console.error("Fatal server startup error:", err)
+  process.exit(1)
+})

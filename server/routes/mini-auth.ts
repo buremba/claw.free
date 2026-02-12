@@ -63,9 +63,10 @@ export function getMiniAuth(c: Context): MiniAuthContext | null {
 
   const token = header.slice(7)
   const payload = verifyState(token)
-  if (!payload?.userId || !payload?.exp) return null
+  if (!payload?.userId || !payload?.telegramId || !payload?.exp) return null
 
   const exp = Number(payload.exp)
+  if (!Number.isFinite(exp)) return null
   if (Math.floor(Date.now() / 1000) > exp) return null
 
   return { userId: payload.userId, telegramId: payload.telegramId }

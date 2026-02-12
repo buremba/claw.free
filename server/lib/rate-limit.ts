@@ -16,16 +16,20 @@ setInterval(() => {
 }, 300_000).unref()
 
 function getClientIp(c: Context): string {
-  // Use x-real-ip if set by reverse proxy, otherwise take the rightmost
-  // x-forwarded-for entry (the one appended by the trusted proxy, not
-  // client-spoofable leftmost entries).
+  // Use x-real-ip if set by reverse proxy, otherwise use x-forwarded-for.
+  //
+  // NOTE: In most deployments (Railway, nginx, Cloudflare), the proxy sets
+  // and/or overwrites these headers and the leftmost x-forwarded-for value is
+  // the original client. If you run the server directly on the internet,
+  // x-forwarded-for is client-spoofable.
   const realIp = c.req.header("x-real-ip")
   if (realIp) return realIp
 
   const xff = c.req.header("x-forwarded-for")
   if (xff) {
     const parts = xff.split(",").map((s) => s.trim()).filter(Boolean)
-    return parts[parts.length - 1] ?? "unknown"
+    // Leftmost is the original client in the common proxy convention.
+    return parts[0] ?? "unknown"
   }
 
   return "unknown"

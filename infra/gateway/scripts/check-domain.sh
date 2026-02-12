@@ -14,16 +14,18 @@
 #
 # If ALLOWLIST_API_URL is empty, allows all traffic (open mode).
 
-while read src_ip dst_domain; do
+while IFS=' ' read -r src_ip dst_domain; do
   if [ -z "$ALLOWLIST_API_URL" ]; then
     # Open mode — no allowlist enforcement
     echo "OK"
     continue
   fi
 
-  result=$(curl -sf \
+  result=$(curl -sfG \
     -H "X-Internal-Key: ${INTERNAL_API_KEY}" \
-    "${ALLOWLIST_API_URL}/api/internal/allowlist?ip=${src_ip}&domain=${dst_domain}" \
+    --data-urlencode "ip=${src_ip}" \
+    --data-urlencode "domain=${dst_domain}" \
+    "${ALLOWLIST_API_URL}/api/internal/allowlist" \
     2>/dev/null)
 
   if echo "$result" | grep -q '"allowed":true'; then

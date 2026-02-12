@@ -300,6 +300,31 @@ export async function deleteDeployment(id: string): Promise<void> {
 
 export async function ensureSchema(): Promise<void> {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS "user" (
+      id UUID PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      "emailVerified" BOOLEAN DEFAULT false,
+      image TEXT,
+      "createdAt" TIMESTAMPTZ DEFAULT now(),
+      "updatedAt" TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS account (
+      id UUID PRIMARY KEY,
+      "accountId" TEXT NOT NULL,
+      "providerId" TEXT NOT NULL,
+      "userId" UUID REFERENCES "user"(id),
+      "accessToken" TEXT,
+      "refreshToken" TEXT,
+      "idToken" TEXT,
+      "accessTokenExpiresAt" TIMESTAMPTZ,
+      scope TEXT,
+      "createdAt" TIMESTAMPTZ DEFAULT now(),
+      "updatedAt" TIMESTAMPTZ DEFAULT now(),
+      UNIQUE("providerId", "accountId")
+    );
+
     CREATE TABLE IF NOT EXISTS channel_identity (
       id UUID PRIMARY KEY,
       user_id UUID REFERENCES "user"(id),
@@ -335,7 +360,5 @@ export async function ensureSchema(): Promise<void> {
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS relay_token TEXT;
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
     ALTER TABLE deployment ADD COLUMN IF NOT EXISTS railway_service_id TEXT;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_relay_token
-      ON deployment(relay_token) WHERE relay_token IS NOT NULL;
   `)
 }

@@ -3,6 +3,7 @@
 // bypassing Hono's WebSocket adapter (which requires a newer version).
 
 import { WebSocketServer } from "ws"
+import type { RawData, WebSocket } from "ws"
 import { getDeploymentByRelayToken } from "../db.js"
 import {
   registerTunnel,
@@ -14,7 +15,7 @@ import {
 } from "./relay.js"
 
 // Thin TunnelSocket wrapper around the ws WebSocket
-function wrapWs(ws: import("ws").WebSocket): TunnelSocket {
+function wrapWs(ws: WebSocket): TunnelSocket {
   return {
     send(data: string) { ws.send(data) },
     close(code?: number, reason?: string) { ws.close(code, reason) },
@@ -38,8 +39,7 @@ function isValidTunnelResponse(msg: unknown): msg is TunnelResponse {
 // Max WebSocket message size (1 MB) — prevents memory exhaustion from oversized payloads
 const MAX_MESSAGE_SIZE = 1024 * 1024
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function setupRelayWebSocket(server: any): void {
+export function setupRelayWebSocket(server: import("node:http").Server): void {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_SIZE })
 
   server.on("upgrade", async (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => {
@@ -82,7 +82,7 @@ export function setupRelayWebSocket(server: any): void {
         registerTunnel(deploymentId, wrapped)
         console.log(`Tunnel connected: ${deploymentId}`)
 
-        ws.on("message", (data) => {
+        ws.on("message", (data: RawData) => {
           try {
             const msg = JSON.parse(data.toString()) as Record<string, unknown>
 
@@ -100,7 +100,7 @@ export function setupRelayWebSocket(server: any): void {
             }
 
             handleTunnelResponse(deploymentId, msg)
-          } catch (err) {
+          } catch (err: unknown) {
             console.error(`Invalid tunnel message from ${deploymentId}:`, err)
           }
         })
@@ -110,7 +110,7 @@ export function setupRelayWebSocket(server: any): void {
           console.log(`Tunnel disconnected: ${deploymentId}`)
         })
 
-        ws.on("error", (err) => {
+        ws.on("error", (err: Error) => {
           console.error(`Tunnel WebSocket error for ${deploymentId}:`, err)
           unregisterTunnel(deploymentId, wrapped)
         })

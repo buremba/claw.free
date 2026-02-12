@@ -44,7 +44,19 @@ export function validateInitData(
   }
 
   try {
-    return JSON.parse(params.get("user") ?? "{}") as TelegramUser
+    const parsed = JSON.parse(params.get("user") ?? "{}") as unknown
+    if (typeof parsed !== "object" || parsed === null) return null
+    const user = parsed as Record<string, unknown>
+    if (typeof user.id !== "number") return null
+    if (typeof user.first_name !== "string" || user.first_name.length === 0) return null
+    return {
+      id: user.id,
+      first_name: user.first_name,
+      last_name: typeof user.last_name === "string" ? user.last_name : undefined,
+      username: typeof user.username === "string" ? user.username : undefined,
+      photo_url: typeof user.photo_url === "string" ? user.photo_url : undefined,
+      language_code: typeof user.language_code === "string" ? user.language_code : undefined,
+    }
   } catch {
     return null
   }
