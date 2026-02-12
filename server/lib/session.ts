@@ -55,8 +55,12 @@ function verifyValue<T>(value: string): T | null {
   const parts = value.split(".")
   if (parts.length !== 2) return null
   const [encoded, signature] = parts
-  if (signature !== sign(encoded, getSecret())) return null
   try {
+    const sigBuf = Buffer.from(signature, "base64url")
+    const expectedBuf = Buffer.from(sign(encoded, getSecret()), "base64url")
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      return null
+    }
     return JSON.parse(Buffer.from(encoded, "base64url").toString()) as T
   } catch {
     return null

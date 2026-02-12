@@ -1,0 +1,28 @@
+# Local development / non-Railway deployment of Headscale
+#
+# Usage:
+#   cp .env.example .env   # edit values
+#   docker compose up -d
+#
+# For Railway: deploy via dashboard pointing root directory to infra/overlay/
+
+services:
+  headscale:
+    build: .
+    ports:
+      - "8080:8080"   # Control plane + DERP (HTTPS)
+      - "9090:9090"   # Metrics
+      - "3478:3478/udp" # STUN (NAT traversal)
+    env_file: .env
+    volumes:
+      - headscale-data:/var/lib/headscale
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "headscale", "health", "--config", "/etc/headscale/config.yaml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  headscale-data:

@@ -121,7 +121,7 @@ function startServer(env = {}) {
       }
     });
 
-    proc.stderr.on("data", (data) => {
+    proc.stderr.on("data", () => {
       // Some startup info may go to stderr
     });
 
@@ -567,11 +567,13 @@ describe("provider server restart resilience", () => {
       ]);
 
       expect(finishReply).toContain("All set");
-      expect(extractMarker(finishReply)?.stage).toBe("done");
+      expect(extractMarker(finishReply)?.stage).toBe("management");
 
-      // Verify config was finalized (claw-free removed)
+      // Verify config was finalized (claw-free kept for management, but not used as a fallback model)
       const config = await readTestConfig();
-      expect(config.models.providers["claw-free"]).toBeUndefined();
+      expect(config.models.providers["claw-free"]).toBeTruthy();
+      expect(config.agents?.defaults?.model?.primary).not.toBe("claw-free/setup");
+      expect(config.agents?.defaults?.model?.fallbacks ?? []).not.toContain("claw-free/setup");
     });
   });
 

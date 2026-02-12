@@ -1,0 +1,86 @@
+# claw.free overlay network — Headscale configuration
+# Rendered from template by entrypoint.sh (envsubst)
+#
+# Environment variables:
+#   HEADSCALE_SERVER_URL  — public URL clients connect to (e.g. https://hs.example.com)
+#   PORT                  — listen port (Railway sets this automatically)
+#   HEADSCALE_BASE_DOMAIN — MagicDNS base domain
+#   DERP_VERIFY_CLIENTS   — only allow authenticated clients to use DERP
+#   LOG_LEVEL             — log verbosity (info, debug, trace)
+
+server_url: ${HEADSCALE_SERVER_URL}
+listen_addr: 0.0.0.0:${PORT}
+metrics_listen_addr: 0.0.0.0:9090
+grpc_listen_addr: 0.0.0.0:50443
+grpc_allow_insecure: false
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+# Embedded DERP relay — fully self-hosted, no Tailscale SaaS dependency.
+# STUN (UDP 3478) enables NAT traversal for direct peer-to-peer connections.
+# On Railway: STUN won't work (no UDP), nodes fall back to DERP-over-HTTPS.
+# On a VM: both STUN and DERP work, giving optimal peer-to-peer connectivity.
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: "claw"
+    region_name: "claw.free Embedded DERP"
+    verify_clients: ${DERP_VERIFY_CLIENTS}
+    stun_listen_addr: "0.0.0.0:3478"
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: true
+
+  # No external DERP servers — fully self-hosted
+  urls: []
+  paths: []
+  auto_update_enabled: false
+
+disable_check_updates: true
+
+ephemeral_node_inactivity_timeout: 30m
+
+# SQLite — recommended by Headscale over Postgres
+database:
+  type: sqlite
+  debug: false
+  gorm:
+    prepare_stmt: true
+    parameterized_queries: true
+    skip_err_record_not_found: true
+    slow_threshold: 1000
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+    wal_autocheckpoint: 1000
+
+# TLS is terminated by the upstream proxy (Railway, Caddy, etc.)
+# Headscale listens on plain HTTP behind the proxy.
+tls_cert_path: ""
+tls_key_path: ""
+
+log:
+  level: ${LOG_LEVEL}
+  format: text
+
+# ACL policy — controls which nodes can talk to each other
+policy:
+  mode: file
+  path: /etc/headscale/acl.json
+
+# MagicDNS — nodes are reachable as hostname.claw.internal
+dns:
+  magic_dns: true
+  base_domain: ${HEADSCALE_BASE_DOMAIN}
+  override_local_dns: true
+  nameservers:
+    global:
+      - 1.1.1.1
+      - 1.0.0.1
+    split: {}

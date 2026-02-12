@@ -7,8 +7,6 @@ let
   configDir = "${homeDir}/.openclaw";
   configPath = "${configDir}/openclaw.json";
   workspaceDir = "${configDir}/workspace";
-  providerDir = "${stateDir}/provider";
-  providerEnvPath = "${stateDir}/provider.env";
   setupMarker = "${stateDir}/.setup-complete";
   guestAttributeSetupUrl = "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/openclaw/setup";
   aiCliBundle = pkgs.buildNpmPackage {
@@ -51,12 +49,6 @@ in
       description = "Gateway port exposed for deployment health checks.";
     };
 
-    defaultProvider = lib.mkOption {
-      type = lib.types.str;
-      default = "claude";
-      description = "Fallback LLM provider used when metadata is missing.";
-    };
-
     metadataHost = lib.mkOption {
       type = lib.types.str;
       default = "http://metadata.google.internal/computeMetadata/v1/instance/attributes";
@@ -67,8 +59,6 @@ in
   config = lib.mkIf cfg.enable {
     networking.firewall.allowedTCPPorts = [ cfg.gatewayPort ];
 
-    # nix-ld provides /lib/ld-linux-x86-64.so.2 compatibility shim so
-    # prebuilt npm native binaries (node-llama-cpp etc.) can find glibc.
     programs.nix-ld.enable = true;
 
     environment.systemPackages = with pkgs; [
@@ -76,11 +66,12 @@ in
       git
       jq
       nodejs_22
+      python3
+      gcc
+      gnumake
       aiCliBundle
     ];
 
-    environment.etc."openclaw/provider/server.js".text = builtins.readFile "${clawfreeRoot}/provider/server.js";
-    environment.etc."openclaw/provider/package.json".text = builtins.readFile "${clawfreeRoot}/provider/package.json";
     environment.etc."openclaw/skill".source = "${clawfreeRoot}/skill";
 
     systemd.tmpfiles.rules = [
@@ -88,7 +79,6 @@ in
       "d ${homeDir} 0755 root root -"
       "d ${configDir} 0755 root root -"
       "d ${workspaceDir} 0755 root root -"
-      "d ${providerDir} 0755 root root -"
     ];
 
     systemd.services.openclaw-setup = {
@@ -96,7 +86,7 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
-      before = [ "claw-free-provider.service" "openclaw-gateway.service" ];
+      before = [ "openclaw-gateway.service" ];
 
       path = with pkgs; [
         bash
@@ -152,20 +142,41 @@ in
           exit 1
         fi
 
-        LLM_PROVIDER="$(metadata_get LLM_PROVIDER "${cfg.defaultProvider}")"
+        install -d "${stateDir}" "${homeDir}" "${configDir}" "${workspaceDir}"
 
-        install -d "${stateDir}" "${homeDir}" "${configDir}" "${workspaceDir}" "${providerDir}"
-
-        cp /etc/openclaw/provider/server.js "${providerDir}/server.js"
-        cp /etc/openclaw/provider/package.json "${providerDir}/package.json"
-
+        # Install skills (management + onboarding)
         rm -rf "${configDir}/skills/claw-free"
         install -d "${configDir}/skills"
         cp -R /etc/openclaw/skill "${configDir}/skills/claw-free"
 
+        # Always start with bootstrap provider — users configure their real LLM
+        # through the dummy model provider's interactive setup flow in the bot chat
+        MODEL_CONFIG=$(${pkgs.jq}/bin/jq -n '{
+          mode: "merge",
+          providers: {
+            "claw-free": {
+              baseUrl: "http://localhost:3456/v1",
+              apiKey: "local",
+              api: "openai-completions",
+              models: [{
+                id: "setup",
+                name: "claw.free Setup",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000,
+                maxTokens: 4096
+              }]
+            }
+          }
+        }')
+        PRIMARY_MODEL="claw-free/setup"
+
         ${pkgs.jq}/bin/jq -n \
           --arg telegramToken "$TELEGRAM_TOKEN" \
           --arg workspace "${workspaceDir}" \
+          --arg primaryModel "$PRIMARY_MODEL" \
+          --argjson models "$MODEL_CONFIG" \
           '{
             gateway: {
               mode: "local"
@@ -174,7 +185,7 @@ in
               defaults: {
                 workspace: $workspace,
                 model: {
-                  primary: "claw-free/setup"
+                  primary: $primaryModel
                 }
               }
             },
@@ -187,32 +198,9 @@ in
                 groupPolicy: "allowlist"
               }
             },
-            models: {
-              mode: "merge",
-              providers: {
-                "claw-free": {
-                  baseUrl: "http://localhost:3456/v1",
-                  apiKey: "local",
-                  api: "openai-completions",
-                  models: [
-                    {
-                      id: "setup",
-                      name: "claw.free Setup",
-                      reasoning: false,
-                      input: ["text"],
-                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                      contextWindow: 128000,
-                      maxTokens: 4096
-                    }
-                  ]
-                }
-              }
-            }
+            models: $models
           }' > "${configPath}"
         chmod 600 "${configPath}"
-
-        printf 'LLM_PROVIDER=%s\n' "$LLM_PROVIDER" > "${providerEnvPath}"
-        chmod 600 "${providerEnvPath}"
 
         touch "${setupMarker}"
         publish_setup_state "ready"
@@ -220,33 +208,44 @@ in
       '';
     };
 
-    systemd.services.claw-free-provider = {
-      description = "claw.free bootstrap LLM provider";
+    # Relay tunnel client — connects outbound to Railway relay server via WebSocket.
+    # Receives Telegram webhooks through the tunnel, forwards to localhost:18789.
+    # No inbound ports needed, no Tailscale, no special network capabilities.
+    systemd.services.openclaw-relay = {
+      description = "WebSocket relay tunnel to Railway";
       wantedBy = [ "multi-user.target" ];
-      requires = [ "openclaw-setup.service" ];
-      after = [ "openclaw-setup.service" "network-online.target" ];
+      after = [ "openclaw-setup.service" "network-online.target" "openclaw-gateway.service" ];
       wants = [ "network-online.target" ];
 
-      environment = {
-        OPENCLAW_CONFIG_PATH = configPath;
-        PATH = lib.mkForce clawPath;
-      };
+      path = with pkgs; [ curl nodejs_22 ];
 
       serviceConfig = {
         Type = "simple";
-        WorkingDirectory = providerDir;
-        ExecStart = "${pkgs.nodejs_22}/bin/node ${providerDir}/server.js";
-        EnvironmentFile = "-${providerEnvPath}";
         Restart = "on-failure";
-        RestartSec = 5;
+        RestartSec = 10;
+        # Wrapper script: fetch credentials from metadata on every start, then exec tunnel.
+        # This handles reboots, restarts, and metadata changes without EnvironmentFile races.
+        ExecStart = "${pkgs.writeShellScript "openclaw-relay-start" ''
+          export RELAY_URL="$(curl -fsS -m 5 "${cfg.metadataHost}/RELAY_URL" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
+          export RELAY_TOKEN="$(curl -fsS -m 5 "${cfg.metadataHost}/RELAY_TOKEN" -H "Metadata-Flavor: Google" 2>/dev/null || true)"
+
+          if [ -z "$RELAY_URL" ] || [ -z "$RELAY_TOKEN" ]; then
+            echo "No RELAY_URL or RELAY_TOKEN in metadata, not starting relay."
+            exit 1
+          fi
+
+          exec ${pkgs.nodejs_22}/bin/node /etc/openclaw/relay-client/tunnel.mjs
+        ''}";
       };
     };
+
+    environment.etc."openclaw/relay-client/tunnel.mjs".source = "${clawfreeRoot}/infra/relay-client/tunnel.mjs";
 
     systemd.services.openclaw-gateway = {
       description = "OpenClaw gateway";
       wantedBy = [ "multi-user.target" ];
-      requires = [ "openclaw-setup.service" "claw-free-provider.service" ];
-      after = [ "openclaw-setup.service" "claw-free-provider.service" "network-online.target" ];
+      requires = [ "openclaw-setup.service" ];
+      after = [ "openclaw-setup.service" "network-online.target" ];
       wants = [ "network-online.target" ];
 
       environment = {

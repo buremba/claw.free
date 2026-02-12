@@ -62,7 +62,7 @@ const CLAW_FREE_PROVIDER_CONFIG = {
 
 // ── State ──────────────────────────────────────────────────────────
 const state = {
-  stage: "welcome", // welcome | waiting_for_code | waiting_for_device_auth | auth_complete | api_key_fallback | add_another | done
+  stage: "welcome", // welcome | waiting_for_code | waiting_for_device_auth | auth_complete | api_key_fallback | add_another | management | done
   selectedProvider: normalizeProvider(process.env.LLM_PROVIDER || "claude"),
   childProcess: null,
   authTimer: null,
@@ -132,10 +132,19 @@ async function syncStateFromConfig() {
     }
     state.configuredProviders = configured;
 
-    // If the claw-free bootstrap provider has been removed, setup is done
-    if (!providers["claw-free"]) {
+    // Check if claw-free/setup is the primary model — if so, we're in an
+    // active setup/auth flow (e.g. switch-llm.sh was used), not management.
+    const primaryModel = config?.agents?.defaults?.model?.primary;
+    const isSetupActive = primaryModel === CLAW_FREE_MODEL;
+
+    if (configured.length > 0 && providers["claw-free"] && !isSetupActive) {
+      // Real providers configured + claw-free as fallback → management mode
+      state.stage = "management";
+    } else if (!providers["claw-free"]) {
+      // Legacy: claw-free was removed (old finalizeConfig behavior)
       state.stage = "done";
     }
+    // Otherwise: claw-free is primary (setup flow active) — keep current stage
   } catch {
     // Config file doesn't exist or is unreadable — fresh start, keep defaults
   }
@@ -448,11 +457,8 @@ async function finalizeConfig() {
   migrateLegacyModelKeys(config);
   ensureConfigShape(config);
 
-  if (config.models?.providers?.["claw-free"]) {
-    delete config.models.providers["claw-free"];
-  }
-
-  // Remove bootstrap fallback model if present.
+  // Keep claw-free provider in config as a fallback for management operations.
+  // Remove it from the fallback model list so it doesn't interfere with normal chat.
   if (Array.isArray(config.agents.defaults.model.fallbacks)) {
     config.agents.defaults.model.fallbacks = config.agents.defaults.model.fallbacks.filter(
       (model) => model !== CLAW_FREE_MODEL,
@@ -525,7 +531,7 @@ I'll detect when you're done automatically. Just send any message after you've a
     return `Welcome to claw.free! Let's set up ${displayName}.
 
 ${getApiKeyFallbackMessage(provider, false)}${stageMarker("api_key_fallback", provider)}`;
-  } catch (err) {
+  } catch {
     // Auth process failed to start — fall back to API key
     state.stage = "api_key_fallback";
     return `${getApiKeyFallbackMessage(provider)}${stageMarker("api_key_fallback", provider)}`;
@@ -557,7 +563,7 @@ async function handleWaitingForCode(userMessage) {
 ${result.url}
 
 After you log in, paste the code here.${stageMarker("waiting_for_code", state.selectedProvider)}`;
-    } catch (err) {
+    } catch {
       state.stage = "api_key_fallback";
       return `${getApiKeyFallbackMessage(state.selectedProvider)}${stageMarker("api_key_fallback", state.selectedProvider)}`;
     }
@@ -590,7 +596,7 @@ ${getApiKeyFallbackMessage(state.selectedProvider)}${stageMarker("api_key_fallba
   }
 }
 
-async function handleWaitingForDeviceAuth(userMessage) {
+async function handleWaitingForDeviceAuth() {
   // Codex polls automatically. Check if auth completed.
   if (state.stage === "auth_complete") {
     return promptAddAnother("openai");
@@ -631,7 +637,7 @@ Go to: ${result.url}
 Enter this code: **${result.code}**
 
 Send another message after you've authorized.${stageMarker("waiting_for_device_auth", "openai")}`;
-    } catch (err) {
+    } catch {
       state.stage = "api_key_fallback";
       return `${getApiKeyFallbackMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
     }
@@ -727,17 +733,70 @@ async function handleAddAnother(userMessage) {
 }
 
 async function finishSetup() {
-  state.stage = "done";
+  state.stage = "management";
   try {
     await finalizeConfig();
   } catch (err) {
-    return `Setup is done but I had trouble restarting: ${err.message}. Try messaging again in a few seconds.${stageMarker("done", state.selectedProvider)}`;
+    return `Setup is done but I had trouble restarting: ${err.message}. Try messaging again in a few seconds.${stageMarker("management", state.selectedProvider)}`;
   }
 
-  return `All set! Your bot is restarting now with the real AI model. Send any message in a few seconds to start chatting!${stageMarker("done", state.selectedProvider)}`;
+  return `All set! Your bot is restarting now with the real AI model. Send any message in a few seconds to start chatting!
+
+You can always add more AI providers later — just ask your bot to "add a model".${stageMarker("management", state.selectedProvider)}`;
+}
+
+async function handleManagement(userMessage) {
+  const msg = userMessage.trim().toLowerCase();
+
+  // "add model" / "add provider" → re-enter setup flow for a new provider
+  if (msg.includes("add") && (msg.includes("model") || msg.includes("provider"))) {
+    const remaining = getRemainingProviders();
+    if (remaining.length === 0) {
+      return `All supported providers are already configured (${state.configuredProviders.map(providerDisplayName).join(", ")}).${stageMarker("management", state.selectedProvider)}`;
+    }
+
+    const options = remaining
+      .map((provider, idx) => `${idx + 1}. ${providerDisplayName(provider)}`)
+      .join("\n");
+
+    state.stage = "add_another";
+    return `Which provider would you like to add?\n${options}\n\nReply with a number.${stageMarker("add_another", state.selectedProvider)}`;
+  }
+
+  // "list models" / "show models" → display configured providers
+  if ((msg.includes("list") || msg.includes("show")) && (msg.includes("model") || msg.includes("provider"))) {
+    return listModelsMessage();
+  }
+
+  // "remove model" / "remove provider" → explain how
+  if (msg.includes("remove") && (msg.includes("model") || msg.includes("provider"))) {
+    return `To remove a provider, ask your bot to run the management skill status command. Model removal requires editing the config directly for now.${stageMarker("management", state.selectedProvider)}`;
+  }
+
+  // Default: brief help
+  return `This is the claw.free management interface. Your configured models:\n${listModelsBody()}\n\nYou can say:\n- "add model" to add another AI provider\n- "list models" to see configured providers${stageMarker("management", state.selectedProvider)}`;
+}
+
+function listModelsBody() {
+  if (state.configuredProviders.length === 0) {
+    return "  (none configured)";
+  }
+  return state.configuredProviders
+    .map((p, idx) => {
+      const label = idx === 0 ? "(primary)" : "(fallback)";
+      return `  ${providerDisplayName(p)} ${label}`;
+    })
+    .join("\n");
+}
+
+function listModelsMessage() {
+  return `Configured providers:\n${listModelsBody()}\n\nRemaining: ${getRemainingProviders().map(providerDisplayName).join(", ") || "none"}\n\nSay "add model" to add another provider.${stageMarker("management", state.selectedProvider)}`;
 }
 
 async function handleDone() {
+  // Legacy: reached when claw-free was removed from config.
+  // In that case this provider is no longer reachable from normal chat,
+  // so just return a terminal "done" response.
   return `Setup is already complete. Your bot should be using the real AI model now. If it's not responding, wait a few seconds and try again.${stageMarker("done", state.selectedProvider)}`;
 }
 
@@ -782,6 +841,8 @@ async function handleMessage(userMessage, messages) {
       return handleApiKeyFallback(userMessage);
     case "add_another":
       return handleAddAnother(userMessage);
+    case "management":
+      return handleManagement(userMessage);
     case "done":
       return handleDone();
     default:

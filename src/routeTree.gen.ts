@@ -9,38 +9,81 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as MiniRouteImport } from './routes/mini'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as MiniIndexRouteImport } from './routes/mini/index'
+import { Route as MiniCreateRouteImport } from './routes/mini/create'
+import { Route as MiniBotIdRouteImport } from './routes/mini/bot.$id'
 
+const MiniRoute = MiniRouteImport.update({
+  id: '/mini',
+  path: '/mini',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MiniIndexRoute = MiniIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => MiniRoute,
+} as any)
+const MiniCreateRoute = MiniCreateRouteImport.update({
+  id: '/create',
+  path: '/create',
+  getParentRoute: () => MiniRoute,
+} as any)
+const MiniBotIdRoute = MiniBotIdRouteImport.update({
+  id: '/bot/$id',
+  path: '/bot/$id',
+  getParentRoute: () => MiniRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/mini': typeof MiniRouteWithChildren
+  '/mini/create': typeof MiniCreateRoute
+  '/mini/': typeof MiniIndexRoute
+  '/mini/bot/$id': typeof MiniBotIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/mini/create': typeof MiniCreateRoute
+  '/mini': typeof MiniIndexRoute
+  '/mini/bot/$id': typeof MiniBotIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/mini': typeof MiniRouteWithChildren
+  '/mini/create': typeof MiniCreateRoute
+  '/mini/': typeof MiniIndexRoute
+  '/mini/bot/$id': typeof MiniBotIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/mini' | '/mini/create' | '/mini/' | '/mini/bot/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/mini/create' | '/mini' | '/mini/bot/$id'
+  id: '__root__' | '/' | '/mini' | '/mini/create' | '/mini/' | '/mini/bot/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  MiniRoute: typeof MiniRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/mini': {
+      id: '/mini'
+      path: '/mini'
+      fullPath: '/mini'
+      preLoaderRoute: typeof MiniRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,11 +91,47 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mini/': {
+      id: '/mini/'
+      path: '/'
+      fullPath: '/mini/'
+      preLoaderRoute: typeof MiniIndexRouteImport
+      parentRoute: typeof MiniRoute
+    }
+    '/mini/create': {
+      id: '/mini/create'
+      path: '/create'
+      fullPath: '/mini/create'
+      preLoaderRoute: typeof MiniCreateRouteImport
+      parentRoute: typeof MiniRoute
+    }
+    '/mini/bot/$id': {
+      id: '/mini/bot/$id'
+      path: '/bot/$id'
+      fullPath: '/mini/bot/$id'
+      preLoaderRoute: typeof MiniBotIdRouteImport
+      parentRoute: typeof MiniRoute
+    }
   }
 }
 
+interface MiniRouteChildren {
+  MiniCreateRoute: typeof MiniCreateRoute
+  MiniIndexRoute: typeof MiniIndexRoute
+  MiniBotIdRoute: typeof MiniBotIdRoute
+}
+
+const MiniRouteChildren: MiniRouteChildren = {
+  MiniCreateRoute: MiniCreateRoute,
+  MiniIndexRoute: MiniIndexRoute,
+  MiniBotIdRoute: MiniBotIdRoute,
+}
+
+const MiniRouteWithChildren = MiniRoute._addFileChildren(MiniRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  MiniRoute: MiniRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,0 +1,26 @@
+# claw.free gateway — Caddy reverse proxy
+#
+# Handles inbound HTTPS traffic for bot webhooks.
+# TLS certs are managed externally by lego (wildcard cert via DNS challenge).
+# Caddy just reads the cert files from disk.
+#
+# Each bot gets a subdomain: <bot-username>.${BOT_DOMAIN}
+# Caddy routes to the bot VM via the Tailscale overlay network.
+
+*.${BOT_DOMAIN} {
+    tls /etc/certs/cert.pem /etc/certs/key.pem
+
+    # Route to bot VMs via overlay network.
+    # The gateway-api sidecar resolves bot-username -> overlay IP.
+    reverse_proxy {
+        dynamic a {
+            name {labels.3}.claw.internal
+            port 18789
+        }
+    }
+
+    log {
+        output file /var/log/gateway/access.log
+        level ${LOG_LEVEL}
+    }
+}

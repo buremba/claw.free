@@ -11,6 +11,10 @@ export interface DeployMetadataInput {
   provider: string
   telegramToken: string
   botName: string
+  tailscaleAuthKey?: string
+  headscaleUrl?: string
+  relayUrl?: string
+  relayToken?: string
 }
 
 export interface BuildInstanceInput {
@@ -21,6 +25,10 @@ export interface BuildInstanceInput {
   botName: string
   sourceImage: string
   machineType?: string
+  tailscaleAuthKey?: string
+  headscaleUrl?: string
+  relayUrl?: string
+  relayToken?: string
 }
 
 export function sanitizeBotName(input: string): string {
@@ -49,12 +57,30 @@ export function buildMetadataItems(input: DeployMetadataInput): {
   key: string
   value: string
 }[] {
-  return [
+  const items = [
     { key: "enable-guest-attributes", value: "TRUE" },
     { key: "TELEGRAM_TOKEN", value: input.telegramToken },
     { key: "LLM_PROVIDER", value: input.provider },
     { key: "BOT_NAME", value: input.botName },
   ]
+
+  // Overlay network: pass Tailscale auth key + Headscale URL to VM
+  if (input.tailscaleAuthKey) {
+    items.push({ key: "TAILSCALE_AUTHKEY", value: input.tailscaleAuthKey })
+  }
+  if (input.headscaleUrl) {
+    items.push({ key: "HEADSCALE_URL", value: input.headscaleUrl })
+  }
+
+  // WebSocket relay: tunnel connectivity without Tailscale/overlay
+  if (input.relayUrl) {
+    items.push({ key: "RELAY_URL", value: input.relayUrl })
+  }
+  if (input.relayToken) {
+    items.push({ key: "RELAY_TOKEN", value: input.relayToken })
+  }
+
+  return items
 }
 
 export function buildInstanceRequestBody(input: BuildInstanceInput): unknown {
@@ -87,6 +113,10 @@ export function buildInstanceRequestBody(input: BuildInstanceInput): unknown {
         provider: input.provider,
         telegramToken: input.telegramToken,
         botName: input.botName,
+        tailscaleAuthKey: input.tailscaleAuthKey,
+        headscaleUrl: input.headscaleUrl,
+        relayUrl: input.relayUrl,
+        relayToken: input.relayToken,
       }),
     },
   }

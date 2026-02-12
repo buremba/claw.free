@@ -1,0 +1,22 @@
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["admin"],
+      "dst": ["*:*"],
+      "comment": "Admin nodes can reach everything (diagnostics, repair)"
+    },
+    {
+      "action": "accept",
+      "src": ["gateway"],
+      "dst": ["bots:*"],
+      "comment": "Gateway can reach all bot VMs (reverse proxy, health checks)"
+    },
+    {
+      "action": "accept",
+      "src": ["bots"],
+      "dst": ["gateway:*"],
+      "comment": "Bot VMs can reach gateway (outbound proxy via Squid)"
+    }
+  ]
+}
