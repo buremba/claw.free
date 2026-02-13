@@ -32,7 +32,7 @@
 
 import type { Context } from "hono"
 import { getDeploymentByRelayToken } from "../db.js"
-import { swapHeaderSecrets, isHostAllowedForDeployment } from "../lib/secure-env.js"
+import { swapHeaderSecrets, checkProxyAccess } from "../lib/secure-env.js"
 
 const PROXY_TIMEOUT_MS = 120_000 // 2 minutes (LLM responses can be slow)
 
@@ -132,16 +132,16 @@ export async function proxyHandler(c: Context): Promise<Response> {
     }, 400)
   }
 
-  // 3. SSRF prevention — only allow proxying to hosts that have at least one
-  //    secret registered in secure_env for this deployment. This is the
-  //    allowlist-only approach: no registered secret = no proxy access.
-  //    Blocks requests to internal IPs, metadata endpoints, localhost, etc.
-  const hostAllowed = await isHostAllowedForDeployment(deploymentId, target.host)
-  if (!hostAllowed) {
+  // 3. Network policy — three-layer check:
+  //    a) Blocklist (PROXY_BLOCKED_HOSTS env) — always denied
+  //    b) Per-deployment secrets (allowedHosts in secure_env) — allowed
+  //    c) Global allowlist (PROXY_ALLOWED_HOSTS env) — allowed
+  //    d) Default deny
+  const access = await checkProxyAccess(deploymentId, target.host)
+  if (!access.allowed) {
     return c.json({
       error: "Host not allowed",
-      details: `No secrets are registered for host "${target.host}" in this deployment. ` +
-        "The proxy only forwards to hosts that have at least one secret in their allowedHosts.",
+      details: access.reason,
     }, 403)
   }
 

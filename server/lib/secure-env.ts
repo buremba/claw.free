@@ -88,22 +88,115 @@ export function hostMatches(targetHost: string, allowedHosts: string[]): boolean
   return false
 }
 
-// ── Host allowlist (SSRF prevention) ─────────────────────────────────
-// The proxy only allows requests to hosts that appear in at least one
-// secret's allowedHosts for the deployment. No registered secret = no access.
-// This prevents agents from using the proxy as an open relay to hit
-// internal services (169.254.169.254, localhost, etc.).
+// ── Network policy (SSRF prevention) ─────────────────────────────────
+// Three-layer evaluation, configured via env vars:
+//
+//   PROXY_BLOCKED_HOSTS  — comma-separated, always denied, overrides everything.
+//                          Defaults to private/internal ranges if unset.
+//   PROXY_ALLOWED_HOSTS  — comma-separated, always allowed for all deployments
+//                          (e.g. common LLM APIs). No default.
+//   Per-deployment        — hosts in secure_env allowedHosts for the deployment.
+//
+// Evaluation order:
+//   1. Blocklist (env)          → DENY
+//   2. Per-deployment secrets   → ALLOW
+//   3. Global allowlist (env)   → ALLOW
+//   4. Default                  → DENY
+
+// Private/reserved ranges that should never be proxy targets.
+// Applied when PROXY_BLOCKED_HOSTS is not explicitly set.
+const DEFAULT_BLOCKED_HOSTS = [
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "0.0.0.0",
+  // Link-local / cloud metadata
+  "169.254.169.254",
+  "metadata.google.internal",
+  // RFC 1918
+  "10.*",
+  "172.16.*", "172.17.*", "172.18.*", "172.19.*",
+  "172.20.*", "172.21.*", "172.22.*", "172.23.*",
+  "172.24.*", "172.25.*", "172.26.*", "172.27.*",
+  "172.28.*", "172.29.*", "172.30.*", "172.31.*",
+  "192.168.*",
+]
+
+function parseHostList(envValue: string | undefined): string[] {
+  if (!envValue) return []
+  return envValue.split(",").map((h) => h.trim()).filter(Boolean)
+}
 
 /**
- * Check whether a deployment has any secret whose allowedHosts match
- * the given target host. This is the top-level SSRF gate.
+ * IP/host blocklist pattern matching.
+ * Supports: exact, *.suffix wildcard, and 10.* style prefix wildcards.
  */
-export async function isHostAllowedForDeployment(
+export function hostMatchesBlocklist(targetHost: string, patterns: string[]): boolean {
+  const t = targetHost.toLowerCase()
+  for (const raw of patterns) {
+    const p = raw.toLowerCase()
+    if (p === t) return true
+    // Wildcard suffix: *.example.com
+    if (p.startsWith("*.")) {
+      const suffix = p.slice(1)
+      if (t.endsWith(suffix) || t === p.slice(2)) return true
+    }
+    // Wildcard prefix for IP ranges: 10.*, 192.168.*
+    if (p.endsWith(".*")) {
+      const prefix = p.slice(0, -1) // "10."
+      if (t.startsWith(prefix)) return true
+    }
+  }
+  return false
+}
+
+function getBlockedHosts(): string[] {
+  const env = process.env.PROXY_BLOCKED_HOSTS
+  // Explicit empty string means "disable blocklist"
+  if (env === "") return []
+  if (env) return parseHostList(env)
+  return DEFAULT_BLOCKED_HOSTS
+}
+
+function getGlobalAllowedHosts(): string[] {
+  return parseHostList(process.env.PROXY_ALLOWED_HOSTS)
+}
+
+/**
+ * Full network policy check for the proxy. Returns { allowed, reason }.
+ *
+ * 1. Blocklist (env PROXY_BLOCKED_HOSTS) → DENY
+ * 2. Per-deployment secrets               → ALLOW
+ * 3. Global allowlist (env PROXY_ALLOWED_HOSTS) → ALLOW
+ * 4. Default                              → DENY
+ */
+export async function checkProxyAccess(
   deploymentId: string,
   targetHost: string,
-): Promise<boolean> {
-  const allPatterns = await getAllowedHostsForDeployment(deploymentId)
-  return hostMatches(targetHost, allPatterns)
+): Promise<{ allowed: boolean; reason: string }> {
+  // 1. Hard blocklist — always denied
+  const blocked = getBlockedHosts()
+  if (hostMatchesBlocklist(targetHost, blocked)) {
+    return { allowed: false, reason: `Host "${targetHost}" is blocked by network policy (PROXY_BLOCKED_HOSTS).` }
+  }
+
+  // 2. Per-deployment secrets — if any secret's allowedHosts matches, allow
+  const deploymentPatterns = await getAllowedHostsForDeployment(deploymentId)
+  if (hostMatches(targetHost, deploymentPatterns)) {
+    return { allowed: true, reason: "per-deployment secret" }
+  }
+
+  // 3. Global allowlist — hosts any deployment can reach
+  const globalAllowed = getGlobalAllowedHosts()
+  if (globalAllowed.length > 0 && hostMatches(targetHost, globalAllowed)) {
+    return { allowed: true, reason: "global allowlist (PROXY_ALLOWED_HOSTS)" }
+  }
+
+  // 4. Default deny
+  return {
+    allowed: false,
+    reason: `No secrets registered for host "${targetHost}" and it is not in PROXY_ALLOWED_HOSTS.`,
+  }
 }
 
 // ── Secret CRUD (wrappers around db + crypto) ───────────────────────

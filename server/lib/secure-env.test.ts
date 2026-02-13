@@ -4,6 +4,7 @@ import {
   findPlaceholders,
   scanHeadersForPlaceholders,
   hostMatches,
+  hostMatchesBlocklist,
 } from "./secure-env.js"
 
 describe("makePlaceholder", () => {
@@ -122,5 +123,62 @@ describe("hostMatches", () => {
   test("wildcard does not match unrelated TLDs", () => {
     // Ensure *.anthropic.com does not match anthropic.com.evil.com
     expect(hostMatches("anthropic.com.evil.com", ["*.anthropic.com"])).toBe(false)
+  })
+})
+
+describe("hostMatchesBlocklist", () => {
+  test("exact match", () => {
+    expect(hostMatchesBlocklist("localhost", ["localhost"])).toBe(true)
+  })
+
+  test("case insensitive", () => {
+    expect(hostMatchesBlocklist("LOCALHOST", ["localhost"])).toBe(true)
+  })
+
+  test("no match", () => {
+    expect(hostMatchesBlocklist("api.anthropic.com", ["localhost"])).toBe(false)
+  })
+
+  test("wildcard suffix (*.example.com)", () => {
+    expect(hostMatchesBlocklist("internal.corp.com", ["*.corp.com"])).toBe(true)
+    expect(hostMatchesBlocklist("corp.com", ["*.corp.com"])).toBe(true)
+    expect(hostMatchesBlocklist("evil.com", ["*.corp.com"])).toBe(false)
+  })
+
+  test("wildcard prefix for IP ranges (10.*)", () => {
+    expect(hostMatchesBlocklist("10.0.0.1", ["10.*"])).toBe(true)
+    expect(hostMatchesBlocklist("10.255.255.255", ["10.*"])).toBe(true)
+    expect(hostMatchesBlocklist("110.0.0.1", ["10.*"])).toBe(false)
+  })
+
+  test("192.168.* blocks RFC 1918 range", () => {
+    expect(hostMatchesBlocklist("192.168.1.1", ["192.168.*"])).toBe(true)
+    expect(hostMatchesBlocklist("192.168.0.1", ["192.168.*"])).toBe(true)
+    expect(hostMatchesBlocklist("192.169.1.1", ["192.168.*"])).toBe(false)
+  })
+
+  test("172.16.* through 172.31.* blocks", () => {
+    expect(hostMatchesBlocklist("172.16.0.1", ["172.16.*"])).toBe(true)
+    expect(hostMatchesBlocklist("172.31.255.255", ["172.31.*"])).toBe(true)
+    expect(hostMatchesBlocklist("172.32.0.1", ["172.32.*"])).toBe(true) // if in list
+    expect(hostMatchesBlocklist("172.15.0.1", ["172.16.*"])).toBe(false)
+  })
+
+  test("cloud metadata IPs", () => {
+    expect(hostMatchesBlocklist("169.254.169.254", ["169.254.169.254"])).toBe(true)
+    expect(hostMatchesBlocklist("metadata.google.internal", ["metadata.google.internal"])).toBe(true)
+  })
+
+  test("empty patterns matches nothing", () => {
+    expect(hostMatchesBlocklist("anything.com", [])).toBe(false)
+  })
+
+  test("multiple patterns", () => {
+    const patterns = ["localhost", "127.0.0.1", "10.*", "192.168.*"]
+    expect(hostMatchesBlocklist("localhost", patterns)).toBe(true)
+    expect(hostMatchesBlocklist("127.0.0.1", patterns)).toBe(true)
+    expect(hostMatchesBlocklist("10.0.0.5", patterns)).toBe(true)
+    expect(hostMatchesBlocklist("192.168.1.100", patterns)).toBe(true)
+    expect(hostMatchesBlocklist("api.anthropic.com", patterns)).toBe(false)
   })
 })
