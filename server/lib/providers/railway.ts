@@ -5,7 +5,12 @@
 import type { AgentProvider, CreateAgentInput, CreateAgentResult, ProviderMeta } from "./types.js"
 import { sanitizeBotName } from "../deploy.js"
 
-const RAILWAY_API = "https://backboard.railway.com/graphql/v2"
+export const RAILWAY_API = "https://backboard.railway.com/graphql/v2"
+
+/** Max retry attempts for transient network errors. */
+const MAX_RETRIES = 3
+/** Base delay in ms for exponential backoff (doubles each retry). */
+const RETRY_BASE_MS = 500
 
 export class RailwayProvider implements AgentProvider {
   readonly name = "Railway"
@@ -16,6 +21,30 @@ export class RailwayProvider implements AgentProvider {
       process.env.RAILWAY_PROJECT_ID &&
       process.env.RAILWAY_AGENT_IMAGE,
     )
+  }
+
+  async validateToken(): Promise<string> {
+    const token = process.env.RAILWAY_API_TOKEN
+    if (!token) throw new Error("RAILWAY_API_TOKEN not set")
+    const projectId = process.env.RAILWAY_PROJECT_ID
+    if (!projectId) throw new Error("RAILWAY_PROJECT_ID not set")
+
+    // Lightweight query: fetch the project name and environments to verify
+    // both the token and project ID are valid in a single round-trip.
+    const data = await this.gql<{
+      project: { name: string; environments: { edges: Array<{ node: { id: string; name: string } }> } }
+    }>(token, {
+      query: `query($id: String!) {
+        project(id: $id) {
+          name
+          environments { edges { node { id name } } }
+        }
+      }`,
+      variables: { id: projectId },
+    })
+
+    const envCount = data.project.environments.edges.length
+    return `Railway token valid — project "${data.project.name}" (${envCount} environment${envCount !== 1 ? "s" : ""})`
   }
 
   async createAgent(input: CreateAgentInput): Promise<CreateAgentResult> {
@@ -106,6 +135,7 @@ export class RailwayProvider implements AgentProvider {
 
     return {
       // No webhookUrl — openclaw manages Telegram polling internally
+      webhookUrl: null,
       providerMeta: {
         cloudProvider: "railway",
         projectId,
@@ -130,7 +160,29 @@ export class RailwayProvider implements AgentProvider {
     } catch { /* best effort */ }
   }
 
-  private async gql<T = unknown>(
+  /** Execute a GraphQL request against the Railway API with retry on transient failures. */
+  async gql<T = unknown>(
+    token: string,
+    body: { query: string; variables?: unknown },
+  ): Promise<T> {
+    let lastError: Error | undefined
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        return await this.gqlOnce<T>(token, body)
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err))
+        // Only retry on network / 5xx errors, not on 4xx or GraphQL logic errors
+        if (!isRetryable(lastError) || attempt === MAX_RETRIES) {
+          throw lastError
+        }
+        const delay = RETRY_BASE_MS * 2 ** attempt
+        await sleep(delay)
+      }
+    }
+    throw lastError!
+  }
+
+  private async gqlOnce<T = unknown>(
     token: string,
     body: { query: string; variables?: unknown },
   ): Promise<T> {
@@ -145,7 +197,9 @@ export class RailwayProvider implements AgentProvider {
 
     if (!res.ok) {
       const text = await res.text()
-      throw new Error(`Railway API error (${res.status}): ${text.slice(0, 200)}`)
+      const err = new Error(`Railway API error (${res.status}): ${text.slice(0, 200)}`)
+      ;(err as NodeJS.ErrnoException).code = `HTTP_${res.status}`
+      throw err
     }
 
     const json = (await res.json()) as { data?: T; errors?: Array<{ message: string }> }
@@ -157,4 +211,26 @@ export class RailwayProvider implements AgentProvider {
     }
     return json.data
   }
+}
+
+/** Determines if an error is worth retrying (network failures, 5xx). */
+function isRetryable(err: Error): boolean {
+  // Network-level errors (ECONNRESET, ETIMEDOUT, fetch failures, etc.)
+  const code = (err as NodeJS.ErrnoException).code
+  if (code && /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|UND_ERR|FETCH_ERROR)/.test(code)) {
+    return true
+  }
+  // HTTP 5xx from the Railway API
+  if (/Railway API error \(5\d\d\)/.test(err.message)) {
+    return true
+  }
+  // fetch() itself can throw TypeError on network failures
+  if (err.name === "TypeError" && /fetch|network/i.test(err.message)) {
+    return true
+  }
+  return false
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

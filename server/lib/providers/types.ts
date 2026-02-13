@@ -35,6 +35,10 @@ export interface AgentProvider {
   /** Whether this provider is properly configured (env vars present). */
   isConfigured(): boolean
 
+  /** Verify that the provider credentials are valid by making a lightweight API call.
+   *  Returns a human-readable status message. Throws on failure. */
+  validateToken(): Promise<string>
+
   /** Provision a new agent instance. */
   createAgent(input: CreateAgentInput): Promise<CreateAgentResult>
 

@@ -22,6 +22,14 @@ export class GcpProvider implements AgentProvider {
     return Boolean(process.env.GCP_SERVICE_ACCOUNT_KEY && process.env.GCP_PROJECT_ID)
   }
 
+  async validateToken(): Promise<string> {
+    const gcpKey = process.env.GCP_SERVICE_ACCOUNT_KEY
+    if (!gcpKey) throw new Error("GCP_SERVICE_ACCOUNT_KEY not set")
+    const accessToken = await getServiceAccountToken(gcpKey)
+    if (!accessToken) throw new Error("Failed to authenticate with GCP service account")
+    return "GCP service account token is valid"
+  }
+
   async createAgent(input: CreateAgentInput): Promise<CreateAgentResult> {
     const gcpKey = process.env.GCP_SERVICE_ACCOUNT_KEY!
     const gcpProject = process.env.GCP_PROJECT_ID!
