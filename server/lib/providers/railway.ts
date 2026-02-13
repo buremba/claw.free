@@ -105,7 +105,7 @@ export class RailwayProvider implements AgentProvider {
     } catch { /* best effort */ }
 
     return {
-      // No webhookUrl — openclaw manages Telegram polling internally
+      webhookUrl: null, // openclaw manages Telegram polling internally
       providerMeta: {
         cloudProvider: "railway",
         projectId,
