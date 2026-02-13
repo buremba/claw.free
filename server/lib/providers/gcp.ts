@@ -58,6 +58,9 @@ export class GcpProvider implements AgentProvider {
     const relayToken = crypto.randomUUID()
     const relayUrl = process.env.RELAY_URL ?? process.env.BASE_URL
 
+    // Proxy URL: agents route LLM/API calls through the proxy for secret injection
+    const proxyUrl = process.env.PROXY_URL ?? process.env.BASE_URL
+
     const instanceBody = buildInstanceRequestBody({
       zone,
       vmName,
@@ -69,6 +72,8 @@ export class GcpProvider implements AgentProvider {
       headscaleUrl: process.env.HEADSCALE_URL,
       relayUrl,
       relayToken,
+      proxyUrl,
+      deploymentId: input.deploymentId,
     })
 
     const res = await fetch(

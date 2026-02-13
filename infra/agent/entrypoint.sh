@@ -84,7 +84,12 @@ mkdir -p "$CONFIG_DIR/agents/main/sessions" "$CONFIG_DIR/credentials"
 chmod 700 "$CONFIG_DIR"
 
 # Start the bootstrap setup provider on port 3456 (handles LLM setup flow)
-OPENCLAW_CONFIG_PATH="$CONFIG_PATH" PORT=3456 node /etc/openclaw/provider/server.js &
+# Pass proxy env vars so the provider can store secrets via the secure env API
+OPENCLAW_CONFIG_PATH="$CONFIG_PATH" PORT=3456 \
+  PROXY_URL="${PROXY_URL:-}" \
+  RELAY_TOKEN="${RELAY_TOKEN:-}" \
+  DEPLOYMENT_ID="${DEPLOYMENT_ID:-}" \
+  node /etc/openclaw/provider/server.js &
 PROVIDER_PID=$!
 
 # Ensure provider server shuts down when gateway exits

@@ -149,6 +149,11 @@ in
           GATEWAY_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
         fi
 
+        # Secure env proxy — agents route LLM calls through this URL to get
+        # real API keys injected from the encrypted secret store.
+        PROXY_URL="$(metadata_get PROXY_URL "")"
+        DEPLOYMENT_ID="$(metadata_get DEPLOYMENT_ID "")"
+
         install -d "${stateDir}" "${homeDir}" "${configDir}" "${workspaceDir}"
 
         # Install skills (management + onboarding)
@@ -215,7 +220,11 @@ in
         chmod 600 "${configPath}"
 
         touch "${setupMarker}"
-        printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$GATEWAY_TOKEN" > "${gatewayEnvPath}"
+        {
+          printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$GATEWAY_TOKEN"
+          if [ -n "$PROXY_URL" ]; then printf 'PROXY_URL=%s\n' "$PROXY_URL"; fi
+          if [ -n "$DEPLOYMENT_ID" ]; then printf 'DEPLOYMENT_ID=%s\n' "$DEPLOYMENT_ID"; fi
+        } > "${gatewayEnvPath}"
         chmod 600 "${gatewayEnvPath}"
 
         # Defer "ready" until the gateway is actually running.
