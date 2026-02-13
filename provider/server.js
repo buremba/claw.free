@@ -8,6 +8,73 @@ const OPENCLAW_CONFIG_PATH =
   process.env.OPENCLAW_CONFIG_PATH || "/var/lib/openclaw/home/.openclaw/openclaw.json";
 const CLAW_FREE_MODEL = "claw-free/setup";
 const SUPPORTED_PROVIDERS = ["claude", "openai", "kimi"];
+
+// ── Secure env proxy ──────────────────────────────────────────────
+// When PROXY_URL is set, API keys are stored in the claw.free encrypted
+// secret store and the agent only sees placeholder tokens (CLAW_SE_*).
+// The proxy swaps placeholders with real keys at request time.
+const PROXY_URL = process.env.PROXY_URL || "";
+const RELAY_TOKEN = process.env.RELAY_TOKEN || "";
+const DEPLOYMENT_ID = process.env.DEPLOYMENT_ID || "";
+const SECURE_MODE = Boolean(PROXY_URL && RELAY_TOKEN && DEPLOYMENT_ID);
+
+// Upstream base URLs for each provider — used to construct proxy URLs
+const PROVIDER_UPSTREAM = {
+  claude: { host: "api.anthropic.com", scheme: "https" },
+  openai: { host: "api.openai.com", scheme: "https" },
+  kimi: { host: "api.moonshot.cn", scheme: "https" },
+};
+
+// Secret names for each provider's API key
+const PROVIDER_SECRET_NAME = {
+  claude: "ANTHROPIC_KEY",
+  openai: "OPENAI_KEY",
+  kimi: "KIMI_KEY",
+};
+
+/**
+ * Store a secret in the claw.free encrypted secret store via the API.
+ * Returns the placeholder token, or null if secure mode is not configured.
+ */
+async function storeSecureSecret(name, value, allowedHosts) {
+  if (!SECURE_MODE) return null;
+
+  const url = `${PROXY_URL}/api/deployments/${DEPLOYMENT_ID}/env`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Relay-Token": RELAY_TOKEN,
+      },
+      body: JSON.stringify({ name, value, allowedHosts }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`Failed to store secure secret ${name}: ${res.status} ${text}`);
+      return null;
+    }
+    const data = await res.json();
+    return data.placeholder; // e.g., "CLAW_SE_ANTHROPIC_KEY"
+  } catch (err) {
+    console.error(`Failed to store secure secret ${name}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Get the base URL for a provider — either through the proxy or direct.
+ */
+function getProviderBaseUrl(provider) {
+  if (!SECURE_MODE) return null; // Use default (provider's built-in URL)
+
+  const upstream = PROVIDER_UPSTREAM[provider];
+  if (!upstream) return null;
+
+  // Route through the proxy: /proxy/<scheme>/<host>
+  return `${PROXY_URL}/proxy/${upstream.scheme}/${upstream.host}`;
+}
 const PROVIDER_CONFIG = {
   claude: {
     displayName: "Claude (Anthropic)",
@@ -327,6 +394,24 @@ function waitForCodexAuth(proc) {
 
 // ── Auth flow with API key paste fallback ──────────────────────────
 async function pasteApiKey(provider, apiKey) {
+  // In secure mode, store the key in the encrypted secret store instead.
+  // The agent will use a CLAW_SE_* placeholder; the proxy swaps it at request time.
+  if (SECURE_MODE) {
+    const secretName = PROVIDER_SECRET_NAME[provider] || `${provider.toUpperCase()}_KEY`;
+    const upstream = PROVIDER_UPSTREAM[provider];
+    const allowedHosts = upstream
+      ? [`${upstream.host}`, `*.${upstream.host.split(".").slice(-2).join(".")}`]
+      : [];
+
+    const placeholder = await storeSecureSecret(secretName, apiKey, allowedHosts);
+    if (placeholder) {
+      console.log(`Secure mode: stored ${secretName} as ${placeholder}`);
+      return; // Secret stored server-side, no need for local paste-token
+    }
+    console.warn(`Secure mode: failed to store ${secretName}, falling back to local`);
+  }
+
+  // Fallback: store locally via openclaw paste-token
   return new Promise((resolve, reject) => {
     const proc = spawn("openclaw", [
       "models",
@@ -447,6 +532,20 @@ async function updateConfigForProvider(provider, isFirst) {
     config.agents.defaults.model.primary = model;
   } else {
     addFallbackModel(config, model);
+  }
+
+  // In secure mode, configure the provider to route through the proxy
+  // with a placeholder API key instead of the real one.
+  if (SECURE_MODE) {
+    const proxyBaseUrl = getProviderBaseUrl(provider);
+    const secretName = PROVIDER_SECRET_NAME[provider] || `${provider.toUpperCase()}_KEY`;
+    const placeholder = `CLAW_SE_${secretName}`;
+    const key = providerKey(provider);
+
+    if (proxyBaseUrl && config.models.providers[key]) {
+      config.models.providers[key].baseUrl = proxyBaseUrl;
+      config.models.providers[key].apiKey = placeholder;
+    }
   }
 
   await writeOpenClawConfig(config);

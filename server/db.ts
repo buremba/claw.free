@@ -296,6 +296,69 @@ export async function deleteDeployment(id: string): Promise<void> {
   await pool.query(`DELETE FROM deployment WHERE id = $1`, [id])
 }
 
+// --- Secure environment variables (encrypted secrets for proxy injection) ---
+
+export interface SecureEnv {
+  id: string
+  deploymentId: string
+  name: string
+  encryptedValue: string
+  allowedHosts: string[]
+  createdAt: Date
+}
+
+const SECURE_ENV_COLUMNS = `
+  id, deployment_id AS "deploymentId", name,
+  encrypted_value AS "encryptedValue",
+  allowed_hosts AS "allowedHosts",
+  created_at AS "createdAt"
+`.replace(/\n/g, " ")
+
+export async function createSecureEnv(input: {
+  deploymentId: string
+  name: string
+  encryptedValue: string
+  allowedHosts: string[]
+}): Promise<SecureEnv> {
+  const result = await pool.query<SecureEnv>(
+    `INSERT INTO secure_env (id, deployment_id, name, encrypted_value, allowed_hosts)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (deployment_id, name) DO UPDATE SET
+       encrypted_value = EXCLUDED.encrypted_value,
+       allowed_hosts = EXCLUDED.allowed_hosts
+     RETURNING ${SECURE_ENV_COLUMNS}`,
+    [crypto.randomUUID(), input.deploymentId, input.name, input.encryptedValue, input.allowedHosts],
+  )
+  return result.rows[0]
+}
+
+export async function getSecureEnvByDeployment(deploymentId: string): Promise<SecureEnv[]> {
+  const result = await pool.query<SecureEnv>(
+    `SELECT ${SECURE_ENV_COLUMNS} FROM secure_env WHERE deployment_id = $1 ORDER BY name`,
+    [deploymentId],
+  )
+  return result.rows
+}
+
+export async function getSecureEnvByName(deploymentId: string, name: string): Promise<SecureEnv | null> {
+  const result = await pool.query<SecureEnv>(
+    `SELECT ${SECURE_ENV_COLUMNS} FROM secure_env WHERE deployment_id = $1 AND name = $2 LIMIT 1`,
+    [deploymentId, name],
+  )
+  return result.rows[0] ?? null
+}
+
+export async function deleteSecureEnv(deploymentId: string, name: string): Promise<void> {
+  await pool.query(
+    `DELETE FROM secure_env WHERE deployment_id = $1 AND name = $2`,
+    [deploymentId, name],
+  )
+}
+
+export async function deleteAllSecureEnv(deploymentId: string): Promise<void> {
+  await pool.query(`DELETE FROM secure_env WHERE deployment_id = $1`, [deploymentId])
+}
+
 // --- Outbound allowlist (per bot IP) ---
 
 export async function getAllowlistedDomainsForIp(ip: string): Promise<string[]> {
@@ -383,6 +446,16 @@ export async function ensureSchema(): Promise<void> {
       domain TEXT NOT NULL,
       created_at TIMESTAMPTZ DEFAULT now(),
       UNIQUE(ip, domain)
+    );
+
+    CREATE TABLE IF NOT EXISTS secure_env (
+      id TEXT PRIMARY KEY,
+      deployment_id TEXT NOT NULL REFERENCES deployment(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      encrypted_value TEXT NOT NULL,
+      allowed_hosts TEXT[] NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE(deployment_id, name)
     );
 
     -- Migrations for existing deployments

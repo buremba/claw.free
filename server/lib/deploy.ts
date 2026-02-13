@@ -15,6 +15,8 @@ export interface DeployMetadataInput {
   headscaleUrl?: string
   relayUrl?: string
   relayToken?: string
+  proxyUrl?: string
+  deploymentId?: string
 }
 
 export interface BuildInstanceInput {
@@ -29,6 +31,8 @@ export interface BuildInstanceInput {
   headscaleUrl?: string
   relayUrl?: string
   relayToken?: string
+  proxyUrl?: string
+  deploymentId?: string
 }
 
 export function sanitizeBotName(input: string): string {
@@ -80,6 +84,14 @@ export function buildMetadataItems(input: DeployMetadataInput): {
     items.push({ key: "RELAY_TOKEN", value: input.relayToken })
   }
 
+  // Secure env proxy: agents route API calls through this to get secrets injected
+  if (input.proxyUrl) {
+    items.push({ key: "PROXY_URL", value: input.proxyUrl })
+  }
+  if (input.deploymentId) {
+    items.push({ key: "DEPLOYMENT_ID", value: input.deploymentId })
+  }
+
   return items
 }
 
@@ -117,6 +129,8 @@ export function buildInstanceRequestBody(input: BuildInstanceInput): unknown {
         headscaleUrl: input.headscaleUrl,
         relayUrl: input.relayUrl,
         relayToken: input.relayToken,
+        proxyUrl: input.proxyUrl,
+        deploymentId: input.deploymentId,
       }),
     },
   }
