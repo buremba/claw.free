@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 
 const PORT = parseInt(process.env.PORT, 10) || 3456;
@@ -169,6 +169,21 @@ function parseStageMarker(messages) {
   }
   return null;
 }
+
+// ── CLI availability check ─────────────────────────────────────────
+function isBinaryAvailable(name) {
+  try {
+    execFileSync("which", [name], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const CLI_AVAILABLE = {
+  claude: isBinaryAvailable("claude"),
+  codex: isBinaryAvailable("codex"),
+};
 
 // ── Auth process spawning ──────────────────────────────────────────
 function spawnClaudeAuth() {
@@ -475,7 +490,7 @@ async function handleWelcome() {
   const displayName = providerDisplayName(provider);
 
   try {
-    if (provider === "claude") {
+    if (provider === "claude" && CLI_AVAILABLE.claude) {
       const result = await spawnClaudeAuth();
       state.childProcess = result.process;
       state.stage = "waiting_for_code";
@@ -494,7 +509,7 @@ ${result.url}
 After you log in, you'll get a code. Paste it here.${stageMarker("waiting_for_code", provider)}`;
     }
 
-    if (provider === "openai") {
+    if (provider === "openai" && CLI_AVAILABLE.codex) {
       const result = await spawnCodexAuth();
       state.childProcess = result.process;
       state.stage = "waiting_for_device_auth";
@@ -527,6 +542,7 @@ Enter this code: **${result.code}**
 I'll detect when you're done automatically. Just send any message after you've authorized.${stageMarker("waiting_for_device_auth", provider)}`;
     }
 
+    // CLI not available or unsupported provider — go straight to API key paste
     state.stage = "api_key_fallback";
     return `Welcome to claw.free! Let's set up ${displayName}.
 

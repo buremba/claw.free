@@ -20,6 +20,7 @@ import { relayWebhook, relayStatus } from "./routes/relay.js"
 import { setupRelayWebSocket } from "./lib/relay-ws.js"
 import { rateLimit } from "./lib/rate-limit.js"
 import { ensureSchema } from "./db.js"
+import { hasProvider, getProvider } from "./lib/providers/index.js"
 
 const app = new Hono()
 const distRoot = fileURLToPath(new URL("../dist", import.meta.url))
@@ -130,6 +131,23 @@ async function main(): Promise<void> {
       process.exit(1)
     }
     console.warn("Continuing without ensured DB schema (development mode).")
+  }
+
+  // Validate provider token on startup so misconfigurations surface early.
+  if (hasProvider()) {
+    try {
+      const provider = getProvider()
+      const status = await provider.validateToken()
+      console.log(`Provider check: ${status}`)
+    } catch (err) {
+      console.error("Provider token validation failed:", err)
+      if (process.env.NODE_ENV === "production") {
+        process.exit(1)
+      }
+      console.warn("Continuing with invalid provider token (development mode).")
+    }
+  } else {
+    console.warn("No agent provider configured — bot creation will be unavailable.")
   }
 
   const port = Number(process.env.PORT ?? 8788)
