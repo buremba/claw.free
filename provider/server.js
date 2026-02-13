@@ -9,14 +9,23 @@ const OPENCLAW_CONFIG_PATH =
 const CLAW_FREE_MODEL = "claw-free/setup";
 const SUPPORTED_PROVIDERS = ["claude", "openai", "kimi"];
 
-// ── Secure env proxy ──────────────────────────────────────────────
-// When PROXY_URL is set, API keys are stored in the claw.free encrypted
-// secret store and the agent only sees placeholder tokens (CLAW_SE_*).
-// The proxy swaps placeholders with real keys at request time.
+// ── Secure env proxy (required) ──────────────────────────────────
+// API keys are stored in the claw.free encrypted secret store and the
+// agent only sees placeholder tokens (CLAW_SE_*). The proxy swaps
+// placeholders with real keys at request time.
 const PROXY_URL = process.env.PROXY_URL || "";
 const RELAY_TOKEN = process.env.RELAY_TOKEN || "";
 const DEPLOYMENT_ID = process.env.DEPLOYMENT_ID || "";
-const SECURE_MODE = Boolean(PROXY_URL && RELAY_TOKEN && DEPLOYMENT_ID);
+
+if (!PROXY_URL || !RELAY_TOKEN || !DEPLOYMENT_ID) {
+  console.error(
+    "Fatal: PROXY_URL, RELAY_TOKEN, and DEPLOYMENT_ID are all required.\n" +
+    `  PROXY_URL=${PROXY_URL ? "(set)" : "(missing)"}\n` +
+    `  RELAY_TOKEN=${RELAY_TOKEN ? "(set)" : "(missing)"}\n` +
+    `  DEPLOYMENT_ID=${DEPLOYMENT_ID ? "(set)" : "(missing)"}`,
+  );
+  process.exit(1);
+}
 
 // Upstream base URLs for each provider — used to construct proxy URLs
 const PROVIDER_UPSTREAM = {
@@ -34,41 +43,62 @@ const PROVIDER_SECRET_NAME = {
 
 /**
  * Store a secret in the claw.free encrypted secret store via the API.
- * Returns the placeholder token, or null if secure mode is not configured.
+ * Retries on 5xx / network errors (up to 3 attempts with exponential backoff).
+ * Fails immediately on 4xx (bad token, bad deployment, etc.).
+ * Throws on failure — callers must handle the error.
  */
 async function storeSecureSecret(name, value, allowedHosts) {
-  if (!SECURE_MODE) return null;
-
   const url = `${PROXY_URL}/api/deployments/${DEPLOYMENT_ID}/env`;
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Relay-Token": RELAY_TOKEN,
-      },
-      body: JSON.stringify({ name, value, allowedHosts }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
+  const MAX_ATTEMPTS = 3;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Relay-Token": RELAY_TOKEN,
+        },
+        body: JSON.stringify({ name, value, allowedHosts }),
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        return data.placeholder; // e.g., "CLAW_SE_ANTHROPIC_KEY"
+      }
+
       const text = await res.text();
-      console.error(`Failed to store secure secret ${name}: ${res.status} ${text}`);
-      return null;
+
+      // 4xx — client error, no point retrying
+      if (res.status >= 400 && res.status < 500) {
+        throw new Error(`${res.status}: ${text}`);
+      }
+
+      // 5xx — server error, retry
+      console.warn(`storeSecureSecret ${name}: attempt ${attempt}/${MAX_ATTEMPTS} got ${res.status}`);
+      if (attempt === MAX_ATTEMPTS) {
+        throw new Error(`${res.status}: ${text}`);
+      }
+    } catch (err) {
+      // If it's our own thrown error (from 4xx above), don't retry
+      if (err.message?.match(/^[45]\d\d:/)) throw err;
+
+      // Network error — retry
+      console.warn(`storeSecureSecret ${name}: attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err.message);
+      if (attempt === MAX_ATTEMPTS) throw err;
     }
-    const data = await res.json();
-    return data.placeholder; // e.g., "CLAW_SE_ANTHROPIC_KEY"
-  } catch (err) {
-    console.error(`Failed to store secure secret ${name}:`, err.message);
-    return null;
+
+    // Exponential backoff: 1s, 2s
+    await new Promise((r) => setTimeout(r, 1000 * attempt));
   }
 }
 
 /**
- * Get the base URL for a provider — either through the proxy or direct.
+ * Get the proxy base URL for a provider.
+ * All traffic routes through the proxy — agents never call upstream directly.
  */
 function getProviderBaseUrl(provider) {
-  if (!SECURE_MODE) return null; // Use default (provider's built-in URL)
-
   const upstream = PROVIDER_UPSTREAM[provider];
   if (!upstream) return null;
 
@@ -171,10 +201,6 @@ function modelId(provider) {
 
 function providerKey(provider) {
   return PROVIDER_CONFIG[provider]?.authKey ?? PROVIDER_CONFIG.claude.authKey;
-}
-
-function apiKeyPrefix(provider) {
-  return PROVIDER_CONFIG[provider]?.apiKeyPrefix ?? "sk-";
 }
 
 function getRemainingProviders() {
@@ -392,45 +418,18 @@ function waitForCodexAuth(proc) {
   });
 }
 
-// ── Auth flow with API key paste fallback ──────────────────────────
-async function pasteApiKey(provider, apiKey) {
-  // In secure mode, store the key in the encrypted secret store instead.
-  // The agent will use a CLAW_SE_* placeholder; the proxy swaps it at request time.
-  if (SECURE_MODE) {
-    const secretName = PROVIDER_SECRET_NAME[provider] || `${provider.toUpperCase()}_KEY`;
-    const upstream = PROVIDER_UPSTREAM[provider];
-    const allowedHosts = upstream
-      ? [`${upstream.host}`, `*.${upstream.host.split(".").slice(-2).join(".")}`]
-      : [];
+// ── Store provider key via secure proxy ──────────────────────────
+// Used by OAuth flows (Claude setup-token, OpenAI device auth) after
+// capturing a token. Always stores server-side — no local fallback.
+async function storeProviderKey(provider, apiKey) {
+  const secretName = PROVIDER_SECRET_NAME[provider] || `${provider.toUpperCase()}_KEY`;
+  const upstream = PROVIDER_UPSTREAM[provider];
+  const allowedHosts = upstream
+    ? [`${upstream.host}`, `*.${upstream.host.split(".").slice(-2).join(".")}`]
+    : [];
 
-    const placeholder = await storeSecureSecret(secretName, apiKey, allowedHosts);
-    if (placeholder) {
-      console.log(`Secure mode: stored ${secretName} as ${placeholder}`);
-      return; // Secret stored server-side, no need for local paste-token
-    }
-    console.warn(`Secure mode: failed to store ${secretName}, falling back to local`);
-  }
-
-  // Fallback: store locally via openclaw paste-token
-  return new Promise((resolve, reject) => {
-    const proc = spawn("openclaw", [
-      "models",
-      "auth",
-      "paste-token",
-      "--provider",
-      providerKey(provider),
-    ], { stdio: ["pipe", "pipe", "pipe"] });
-
-    proc.stdin.write(apiKey + "\n");
-    proc.stdin.end();
-
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`paste-token exited with code ${code}`));
-    });
-
-    proc.on("error", reject);
-  });
+  const placeholder = await storeSecureSecret(secretName, apiKey, allowedHosts);
+  console.log(`Stored ${secretName} as ${placeholder}`);
 }
 
 async function restartGateway() {
@@ -534,18 +533,17 @@ async function updateConfigForProvider(provider, isFirst) {
     addFallbackModel(config, model);
   }
 
-  // In secure mode, configure the provider to route through the proxy
-  // with a placeholder API key instead of the real one.
-  if (SECURE_MODE) {
-    const proxyBaseUrl = getProviderBaseUrl(provider);
-    const secretName = PROVIDER_SECRET_NAME[provider] || `${provider.toUpperCase()}_KEY`;
-    const placeholder = `CLAW_SE_${secretName}`;
-    const key = providerKey(provider);
+  // Always route through the proxy with a placeholder API key.
+  // The proxy swaps CLAW_SE_* placeholders with real secrets at request time.
+  const proxyBaseUrl = getProviderBaseUrl(provider);
+  const secretName = PROVIDER_SECRET_NAME[provider] || `${provider.toUpperCase()}_KEY`;
+  const placeholder = `CLAW_SE_${secretName}`;
+  const key = providerKey(provider);
 
-    if (proxyBaseUrl && config.models.providers[key]) {
-      config.models.providers[key].baseUrl = proxyBaseUrl;
-      config.models.providers[key].apiKey = placeholder;
-    }
+  if (proxyBaseUrl) {
+    if (!config.models.providers[key]) config.models.providers[key] = {};
+    config.models.providers[key].baseUrl = proxyBaseUrl;
+    config.models.providers[key].apiKey = placeholder;
   }
 
   await writeOpenClawConfig(config);
@@ -629,20 +627,44 @@ I'll detect when you're done automatically. Just send any message after you've a
     state.stage = "api_key_fallback";
     return `Welcome to claw.free! Let's set up ${displayName}.
 
-${getApiKeyFallbackMessage(provider, false)}${stageMarker("api_key_fallback", provider)}`;
+${getSetEnvMessage(provider)}${stageMarker("api_key_fallback", provider)}`;
   } catch {
-    // Auth process failed to start — fall back to API key
+    // Auth process failed to start — fall back to web UI key entry
     state.stage = "api_key_fallback";
-    return `${getApiKeyFallbackMessage(provider)}${stageMarker("api_key_fallback", provider)}`;
+    return `I wasn't able to start the automatic login flow. No worries — you can set your API key via the web instead.
+
+${getSetEnvMessage(provider)}${stageMarker("api_key_fallback", provider)}`;
   }
 }
 
-function getApiKeyFallbackMessage(provider, includePreface = true) {
-  const config = PROVIDER_CONFIG[provider] ?? PROVIDER_CONFIG.claude;
-  const preface = includePreface
-    ? "I wasn't able to start the automatic login flow. No worries — you can paste an API key instead.\n\n"
+/**
+ * Build the /set-env web UI URL for a provider.
+ */
+function getSetEnvUrl(provider) {
+  const secretName = PROVIDER_SECRET_NAME[provider] || `${provider.toUpperCase()}_KEY`;
+  const upstream = PROVIDER_UPSTREAM[provider];
+  const allowedHosts = upstream
+    ? `${upstream.host},*.${upstream.host.split(".").slice(-2).join(".")}`
     : "";
-  return `${preface}${config.apiKeyHelp.join("\n")}`;
+  const config = PROVIDER_CONFIG[provider] ?? PROVIDER_CONFIG.claude;
+  const prompt = config.apiKeyHelp.join("\n");
+
+  const params = new URLSearchParams({
+    deployment: DEPLOYMENT_ID,
+    name: secretName,
+    prompt,
+    allowedHosts,
+    token: RELAY_TOKEN,
+  });
+  return `${PROXY_URL}/set-env?${params}`;
+}
+
+/**
+ * Message directing user to set their API key via the web UI.
+ */
+function getSetEnvMessage(provider) {
+  const url = getSetEnvUrl(provider);
+  return `Please set your API key here:\n${url}\n\nOnce done, say **continue**.`;
 }
 
 async function handleWaitingForCode(userMessage) {
@@ -664,7 +686,7 @@ ${result.url}
 After you log in, paste the code here.${stageMarker("waiting_for_code", state.selectedProvider)}`;
     } catch {
       state.stage = "api_key_fallback";
-      return `${getApiKeyFallbackMessage(state.selectedProvider)}${stageMarker("api_key_fallback", state.selectedProvider)}`;
+      return `${getSetEnvMessage(state.selectedProvider)}${stageMarker("api_key_fallback", state.selectedProvider)}`;
     }
   }
 
@@ -675,9 +697,9 @@ After you log in, paste the code here.${stageMarker("waiting_for_code", state.se
     const token = await waitForClaudeToken(state.childProcess);
     killAuthProcess();
 
-    // If token was captured, paste it
+    // If token was captured, store it server-side
     if (token) {
-      await pasteApiKey("claude", token);
+      await storeProviderKey("claude", token);
     }
 
     if (!state.configuredProviders.includes("claude")) {
@@ -689,9 +711,9 @@ After you log in, paste the code here.${stageMarker("waiting_for_code", state.se
   } catch (err) {
     killAuthProcess();
     state.stage = "api_key_fallback";
-    return `That didn't work (${err.message}). Let's try the API key method instead.
+    return `That didn't work (${err.message}). You can set your API key via the web instead.
 
-${getApiKeyFallbackMessage(state.selectedProvider)}${stageMarker("api_key_fallback", state.selectedProvider)}`;
+${getSetEnvMessage(state.selectedProvider)}${stageMarker("api_key_fallback", state.selectedProvider)}`;
   }
 }
 
@@ -702,7 +724,7 @@ async function handleWaitingForDeviceAuth() {
   }
 
   if (state.stage === "api_key_fallback") {
-    return `${getApiKeyFallbackMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
+    return `${getSetEnvMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
   }
 
   if (!state.childProcess) {
@@ -738,7 +760,7 @@ Enter this code: **${result.code}**
 Send another message after you've authorized.${stageMarker("waiting_for_device_auth", "openai")}`;
     } catch {
       state.stage = "api_key_fallback";
-      return `${getApiKeyFallbackMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
+      return `${getSetEnvMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
     }
   }
 
@@ -746,27 +768,40 @@ Send another message after you've authorized.${stageMarker("waiting_for_device_a
   return `Still waiting for you to authorize. Go to the link above and enter the code. Send another message when you're done.${stageMarker("waiting_for_device_auth", state.selectedProvider)}`;
 }
 
-async function handleApiKeyFallback(userMessage) {
-  const apiKey = userMessage.trim();
-  const provider = state.selectedProvider;
-
-  // Basic validation
-  const expectedPrefix = apiKeyPrefix(provider);
-  if (!apiKey.startsWith(expectedPrefix)) {
-    return `That doesn't look like a ${providerDisplayName(provider)} API key (should start with ${expectedPrefix}). Try again:${stageMarker("api_key_fallback", provider)}`;
-  }
-
+/**
+ * Check whether a secret with the expected name exists for this deployment.
+ */
+async function checkSecretExists(secretName) {
+  const url = `${PROXY_URL}/api/deployments/${DEPLOYMENT_ID}/env`;
   try {
-    await pasteApiKey(provider, apiKey);
+    const res = await fetch(url, {
+      headers: { "X-Relay-Token": RELAY_TOKEN },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.secrets?.some((s) => s.name === secretName);
+  } catch {
+    return false;
+  }
+}
+
+async function handleApiKeyFallback(userMessage) {
+  const provider = state.selectedProvider;
+  const secretName = PROVIDER_SECRET_NAME[provider] || `${provider.toUpperCase()}_KEY`;
+
+  // Check if the user has set the secret via the web UI
+  const exists = await checkSecretExists(secretName);
+  if (exists) {
     if (!state.configuredProviders.includes(provider)) {
       state.configuredProviders.push(provider);
     }
     await updateConfigForProvider(provider, state.configuredProviders.length === 1);
-
     return promptAddAnother(provider);
-  } catch (err) {
-    return `Failed to save the API key: ${err.message}. Try pasting it again:${stageMarker("api_key_fallback", provider)}`;
   }
+
+  // Not set yet — remind them
+  return `I don't see your key yet. Please open the link and set it:\n${getSetEnvUrl(provider)}\n\nOnce done, say **continue**.${stageMarker("api_key_fallback", provider)}`;
 }
 
 function promptAddAnother(justConfigured) {
@@ -923,7 +958,7 @@ async function handleMessage(userMessage, messages) {
       return promptAddAnother("openai");
     }
     if (state.stage === "api_key_fallback") {
-      return `${getApiKeyFallbackMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
+      return `${getSetEnvMessage("openai")}${stageMarker("api_key_fallback", "openai")}`;
     }
   }
 

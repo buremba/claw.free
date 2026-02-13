@@ -19,6 +19,7 @@ import { internalAllowlist, internalAllowlistUpsert } from "./routes/internal-al
 import { relayWebhook, relayStatus } from "./routes/relay.js"
 import { secureEnvCreate, secureEnvList, secureEnvDelete } from "./routes/secure-env.js"
 import { proxyHandler } from "./routes/proxy.js"
+import { setEnvPage } from "./routes/set-env.js"
 import { setupRelayWebSocket } from "./lib/relay-ws.js"
 import { rateLimit } from "./lib/rate-limit.js"
 import { ensureSchema } from "./db.js"
@@ -73,6 +74,9 @@ app.post("/api/mini/validate-token", rateLimit(10, 60_000), miniValidateToken)
 // --- Internal routes (gateway → API, authenticated via X-Internal-Key) ---
 app.get("/api/internal/allowlist", internalAllowlist)
 app.post("/api/internal/allowlist", internalAllowlistUpsert)
+
+// --- Web UI for setting env vars (API keys via browser, not Telegram chat) ---
+app.get("/set-env", setEnvPage)
 
 // --- Secure environment variables (encrypted secret storage for proxy) ---
 app.post("/api/deployments/:id/env", secureEnvCreate)
