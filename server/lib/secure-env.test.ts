@@ -97,4 +97,30 @@ describe("hostMatches", () => {
   test("empty allowed hosts", () => {
     expect(hostMatches("api.anthropic.com", [])).toBe(false)
   })
+
+  // SSRF prevention — these hosts should never appear in allowedHosts,
+  // and even if they did, the allowlist-only design means only hosts with
+  // registered secrets can be reached through the proxy.
+  test("blocks localhost when not in allowlist", () => {
+    expect(hostMatches("localhost", ["api.anthropic.com"])).toBe(false)
+  })
+
+  test("blocks 127.0.0.1 when not in allowlist", () => {
+    expect(hostMatches("127.0.0.1", ["api.anthropic.com"])).toBe(false)
+  })
+
+  test("blocks GCP metadata IP when not in allowlist", () => {
+    expect(hostMatches("169.254.169.254", ["api.anthropic.com"])).toBe(false)
+  })
+
+  test("blocks internal IPs when not in allowlist", () => {
+    expect(hostMatches("10.0.0.1", ["api.anthropic.com"])).toBe(false)
+    expect(hostMatches("192.168.1.1", ["*.anthropic.com"])).toBe(false)
+    expect(hostMatches("172.16.0.1", ["api.openai.com"])).toBe(false)
+  })
+
+  test("wildcard does not match unrelated TLDs", () => {
+    // Ensure *.anthropic.com does not match anthropic.com.evil.com
+    expect(hostMatches("anthropic.com.evil.com", ["*.anthropic.com"])).toBe(false)
+  })
 })

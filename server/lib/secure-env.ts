@@ -12,7 +12,6 @@
 //   2. The proxy only swaps it when the target host matches
 //   3. The proxy only accepts requests from authenticated deployments
 
-import { createHmac } from "node:crypto"
 import { encrypt, decrypt } from "./crypto.js"
 import {
   createSecureEnv,
@@ -20,7 +19,7 @@ import {
   getSecureEnvByName,
   deleteSecureEnv,
   deleteAllSecureEnv,
-  type SecureEnv,
+  getAllowedHostsForDeployment,
 } from "../db.js"
 
 // ── Placeholder format ──────────────────────────────────────────────
@@ -87,6 +86,24 @@ export function hostMatches(targetHost: string, allowedHosts: string[]): boolean
     }
   }
   return false
+}
+
+// ── Host allowlist (SSRF prevention) ─────────────────────────────────
+// The proxy only allows requests to hosts that appear in at least one
+// secret's allowedHosts for the deployment. No registered secret = no access.
+// This prevents agents from using the proxy as an open relay to hit
+// internal services (169.254.169.254, localhost, etc.).
+
+/**
+ * Check whether a deployment has any secret whose allowedHosts match
+ * the given target host. This is the top-level SSRF gate.
+ */
+export async function isHostAllowedForDeployment(
+  deploymentId: string,
+  targetHost: string,
+): Promise<boolean> {
+  const allPatterns = await getAllowedHostsForDeployment(deploymentId)
+  return hostMatches(targetHost, allPatterns)
 }
 
 // ── Secret CRUD (wrappers around db + crypto) ───────────────────────

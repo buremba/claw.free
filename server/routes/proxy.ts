@@ -15,10 +15,10 @@
 // The proxy:
 //   1. Authenticates the agent (Proxy-Authorization or X-Relay-Token)
 //   2. Extracts the target URL from the path
-//   3. Scans ALL request headers for CLAW_SE_* placeholder patterns
-//   4. Resolves each placeholder to the real encrypted secret
-//   5. Validates the target host is in the secret's allowed-hosts list
-//   6. Replaces the placeholder with the real value
+//   3. SSRF gate: rejects if no secret's allowedHosts matches the target
+//   4. Builds upstream headers (strips hop-by-hop, sets Host)
+//   5. Scans ALL request headers for CLAW_SE_* placeholder patterns
+//   6. Resolves each placeholder to the real encrypted secret
 //   7. Forwards the request to the upstream service
 //   8. Streams the response back to the agent
 //
@@ -26,12 +26,13 @@
 //   - Agent never sees real API keys (only placeholders)
 //   - Placeholders are useless outside this proxy (upstream rejects them)
 //   - Host restrictions prevent exfiltration (secret X only works for host Y)
+//   - Allowlist-only: proxy ONLY forwards to hosts with registered secrets,
+//     blocking SSRF to internal IPs (169.254.169.254, localhost, etc.)
 //   - Each deployment has its own isolated set of secrets
 
 import type { Context } from "hono"
-import { timingSafeEqual } from "node:crypto"
-import { getDeploymentByRelayToken, getDeployment } from "../db.js"
-import { swapHeaderSecrets } from "../lib/secure-env.js"
+import { getDeploymentByRelayToken } from "../db.js"
+import { swapHeaderSecrets, isHostAllowedForDeployment } from "../lib/secure-env.js"
 
 const PROXY_TIMEOUT_MS = 120_000 // 2 minutes (LLM responses can be slow)
 
@@ -41,15 +42,6 @@ const HOP_BY_HOP_HEADERS = new Set([
   "te", "trailer", "transfer-encoding", "upgrade",
   "x-relay-token", "x-deployment-id",
 ])
-
-// Maximum request body size (10 MB)
-const MAX_BODY_SIZE = 10 * 1024 * 1024
-
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a)
-  const bufB = Buffer.from(b)
-  return bufA.length === bufB.length && timingSafeEqual(bufA, bufB)
-}
 
 /**
  * Authenticate the request and return the deployment ID.
@@ -140,10 +132,23 @@ export async function proxyHandler(c: Context): Promise<Response> {
     }, 400)
   }
 
-  // 3. Build upstream headers
+  // 3. SSRF prevention — only allow proxying to hosts that have at least one
+  //    secret registered in secure_env for this deployment. This is the
+  //    allowlist-only approach: no registered secret = no proxy access.
+  //    Blocks requests to internal IPs, metadata endpoints, localhost, etc.
+  const hostAllowed = await isHostAllowedForDeployment(deploymentId, target.host)
+  if (!hostAllowed) {
+    return c.json({
+      error: "Host not allowed",
+      details: `No secrets are registered for host "${target.host}" in this deployment. ` +
+        "The proxy only forwards to hosts that have at least one secret in their allowedHosts.",
+    }, 403)
+  }
+
+  // 4. Build upstream headers
   const upstreamHeaders = buildUpstreamHeaders(c.req.raw.headers, target.host)
 
-  // 4. Scan and swap placeholder secrets in headers
+  // 5. Scan and swap placeholder secrets in headers
   const { headers: resolvedHeaders, blocked } = await swapHeaderSecrets(
     deploymentId,
     upstreamHeaders,
@@ -158,7 +163,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     }, 403)
   }
 
-  // 5. Forward request to upstream
+  // 6. Forward request to upstream
   const method = c.req.method
   const hasBody = method !== "GET" && method !== "HEAD"
 
@@ -176,7 +181,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
   try {
     const upstream = await fetch(target.url, fetchInit)
 
-    // 6. Stream response back — pass through status, headers, and body
+    // 7. Stream response back — pass through status, headers, and body
     const responseHeaders = new Headers()
     upstream.headers.forEach((value, key) => {
       const lower = key.toLowerCase()

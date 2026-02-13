@@ -359,6 +359,19 @@ export async function deleteAllSecureEnv(deploymentId: string): Promise<void> {
   await pool.query(`DELETE FROM secure_env WHERE deployment_id = $1`, [deploymentId])
 }
 
+/**
+ * Get all distinct allowed host patterns across all secrets for a deployment.
+ * Used by the proxy to enforce allowlist-only access — if no secret's allowedHosts
+ * matches the target host, the request is blocked (SSRF prevention).
+ */
+export async function getAllowedHostsForDeployment(deploymentId: string): Promise<string[]> {
+  const result = await pool.query<{ host: string }>(
+    `SELECT DISTINCT unnest(allowed_hosts) AS host FROM secure_env WHERE deployment_id = $1`,
+    [deploymentId],
+  )
+  return result.rows.map((r) => r.host)
+}
+
 // --- Outbound allowlist (per bot IP) ---
 
 export async function getAllowlistedDomainsForIp(ip: string): Promise<string[]> {
