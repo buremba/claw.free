@@ -83,5 +83,12 @@ export OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-$(head -c 32 /dev/urand
 mkdir -p "$CONFIG_DIR/agents/main/sessions" "$CONFIG_DIR/credentials"
 chmod 700 "$CONFIG_DIR"
 
+# Start the bootstrap setup provider on port 3456 (handles LLM setup flow)
+OPENCLAW_CONFIG_PATH="$CONFIG_PATH" PORT=3456 node /etc/openclaw/provider/server.js &
+PROVIDER_PID=$!
+
+# Ensure provider server shuts down when gateway exits
+trap "kill $PROVIDER_PID 2>/dev/null" EXIT
+
 echo "Starting OpenClaw agent (port=$PORT, bot=$BOT_NAME)"
 exec openclaw gateway --bind auto --port "$PORT"

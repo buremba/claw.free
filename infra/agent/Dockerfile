@@ -26,10 +26,10 @@ RUN npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
 # Pre-install openclaw globally so it's available without npx download on each start
 RUN npm install -g openclaw@latest
 
-# Copy skill definitions + relay client (relay not used in Railway mode, but
-# included for completeness if the image is reused in GCP Docker mode)
+# Copy skill definitions + relay client + bootstrap provider
 COPY skill/ /etc/openclaw/skill/
 COPY infra/relay-client/tunnel.mjs /etc/openclaw/relay-client/tunnel.mjs
+COPY provider/server.js /etc/openclaw/provider/server.js
 
 COPY infra/agent/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
